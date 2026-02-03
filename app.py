@@ -370,6 +370,12 @@ if not st.session_state.logged_in:
             elif signup_user(signup_data):
                 st.success("✅ Compte créé ! Veuillez compléter votre profil.")
                 st.rerun()
+    supabase: Client = create_client(
+    os.getenv("SUPABASE_URL"), 
+    os.getenv("SUPABASE_ANON_KEY"),
+    # ✅ CORRECTION : Redirection vers l'URL de production
+    options={"auth": {"auto_refresh_token": True, "persist_session": True}}
+)
 
 # --- PROFIL À COMPLÉTER ---
 elif not st.session_state.profile_completed:
