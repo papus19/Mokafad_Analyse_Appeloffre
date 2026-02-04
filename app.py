@@ -328,19 +328,20 @@ def login_user(email, password):
         # Chercher l'entreprise
         result = supabase.table('entreprises').select("*").eq('contact_email', email).execute()
         
-        if result.data and len(result.data) > 0:
-            # ✅ Profil complet trouvé
+        if result.data:
             st.session_state.user = result.data[0]
             st.session_state.logged_in = True
             st.session_state.profile_completed = bool(st.session_state.user.get('logo_url'))
-            st.success(f"✅ Bienvenue {result.data[0].get('nom_entreprise', 'Utilisateur')} !")
             return True
         else:
-            # ❌ Aucun profil trouvé
-            st.error("❌ Aucun profil entreprise trouvé pour cet utilisateur.")
-            st.info("💡 Veuillez d'abord créer votre compte via l'onglet 'Inscription'")
-            supabase.auth.sign_out()
-            return False
+            # Profil incomplet
+            st.session_state.user = {
+                "contact_email": email,
+                "user_id": session.user.id
+            }
+            st.session_state.logged_in = True
+            st.session_state.profile_completed = False
+            return True
             
     except Exception as e:
         st.error(f"❌ Erreur connexion: {str(e)}")
@@ -459,14 +460,6 @@ elif not st.session_state.profile_completed:
 else:
     user = st.session_state.user
     
-    # ✅ VÉRIFICATION CRITIQUE: S'assurer que user a un ID
-    if not user or not user.get('id'):
-        st.error("❌ Erreur: Profil utilisateur incomplet. Veuillez vous reconnecter.")
-        if st.button("🔄 Reconnecter"):
-            st.session_state.clear()
-            st.rerun()
-        st.stop()
-    
     # SIDEBAR
     with st.sidebar:
         if user.get('logo_url'):
@@ -480,14 +473,10 @@ else:
         st.markdown(f"**{user.get('contact_nom', '')}**")
         st.markdown("---")
         
-        # Métriques (avec gestion d'erreur)
-        try:
-            projets = supabase.table('projets_antecedents').select("id", count="exact").eq('entreprise_id', user['id']).execute()
-            soumissions = supabase.table('soumissions').select("id", count="exact").eq('entreprise_id', user['id']).execute()
-            qualifies = supabase.table('soumissions').select("id", count="exact").eq('entreprise_id', user['id']).eq('statut', 'qualifie').execute()
-        except Exception as e:
-            st.error(f"❌ Erreur chargement métriques: {str(e)}")
-            projets = soumissions = qualifies = type('obj', (object,), {'count': 0})()
+        # Métriques
+        projets = supabase.table('projets_antecedents').select("id", count="exact").eq('entreprise_id', user['id']).execute()
+        soumissions = supabase.table('soumissions').select("id", count="exact").eq('entreprise_id', user['id']).execute()
+        qualifies = supabase.table('soumissions').select("id", count="exact").eq('entreprise_id', user['id']).eq('statut', 'qualifie').execute()
         
         st.metric("🏗️ Projets", projets.count)
         st.metric("📄 Soumissions", soumissions.count)
@@ -510,18 +499,15 @@ else:
         st.header("📊 Tableau de bord")
         
         col1, col2, col3 = st.columns(3)
-        try:
-            with col1:
-                projets = supabase.table('projets_antecedents').select("id", count="exact").eq('entreprise_id', user['id']).execute()
-                st.metric("🏗️ Projets réalisés", projets.count)
-            with col2:
-                soumissions = supabase.table('soumissions').select("id", count="exact").eq('entreprise_id', user['id']).execute()
-                st.metric("📄 Soumissions analysées", soumissions.count)
-            with col3:
-                qualifies = supabase.table('soumissions').select("id", count="exact").eq('entreprise_id', user['id']).eq('statut', 'qualifie').execute()
-                st.metric("✅ Qualifiées", qualifies.count)
-        except Exception as e:
-            st.error(f"❌ Erreur chargement statistiques: {str(e)}")
+        with col1:
+            projets = supabase.table('projets_antecedents').select("id", count="exact").eq('entreprise_id', user['id']).execute()
+            st.metric("🏗️ Projets réalisés", projets.count)
+        with col2:
+            soumissions = supabase.table('soumissions').select("id", count="exact").eq('entreprise_id', user['id']).execute()
+            st.metric("📄 Soumissions analysées", soumissions.count)
+        with col3:
+            qualifies = supabase.table('soumissions').select("id", count="exact").eq('entreprise_id', user['id']).eq('statut', 'qualifie').execute()
+            st.metric("✅ Qualifiées", qualifies.count)
         
         st.markdown("---")
         st.subheader("📈 Dernières analyses")
