@@ -176,9 +176,12 @@ if 'access_token' not in st.session_state:
     st.session_state.access_token = None
 
 def apply_supabase_auth():
-    """Applique le token stocké dans la session au client Supabase"""
+    """Applique le token s'il existe, sinon désactive l'auth (sûr pour les SELECT publics)"""
     token = st.session_state.get('access_token')
-    supabase.postgrest.auth(token)
+    if token and isinstance(token, str) and token.strip():
+        supabase.postgrest.auth(token)
+    else:
+        supabase.postgrest.auth(None)  # explicite : pas d'auth
 
 def clear_supabase_auth():
     """Supprime l'authentification du client"""
@@ -187,7 +190,6 @@ def clear_supabase_auth():
 # --- FONCTIONS BASE DE DONNÉES ---
 def signup_user(data):
     try:
-        # Inscription
         supabase.auth.sign_up({
             "email": data["contact_email"], 
             "password": data["password"]
@@ -195,17 +197,18 @@ def signup_user(data):
         import time
         time.sleep(2)
 
-        # Connexion pour obtenir un token
         session = supabase.auth.sign_in_with_password({
             "email": data["contact_email"], 
             "password": data["password"]
         })
 
-        # 🔑 Appliquer le token au client
+        # 🔍 Validation stricte du token
+        if not session or not getattr(session, 'session', None) or not session.session.access_token:
+            raise ValueError("Impossible de récupérer le token d'accès après connexion")
+
         st.session_state.access_token = session.session.access_token
         apply_supabase_auth()
 
-        # Données entreprise
         entreprise_data = {
             "nom_entreprise": data["nom_entreprise"],
             "numero_neq": data["numero_neq"],
@@ -219,7 +222,7 @@ def signup_user(data):
             "contact_nom": data["contact_nom"],
             "contact_telephone": data["contact_telephone"],
             "contact_email": data["contact_email"],
-            "user_id": session.user.id  # nécessaire si pas de DEFAULT auth.uid()
+            "user_id": session.user.id
         }
 
         result = supabase.table('entreprises').insert(entreprise_data).execute()
