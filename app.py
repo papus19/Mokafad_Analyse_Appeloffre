@@ -6,14 +6,13 @@ from supabase import create_client, Client
 from pypdf import PdfReader
 import forms
 import storage
-# import anthropic  # pip install anthropic
-import requests  # Pour Groq/Together AI
+import requests
 
 # --- CONFIGURATION ---
 load_dotenv()
 st.set_page_config(page_title="⚡ MOKAFAD - Solution Soumission IA", page_icon="⚡", layout="wide")
 
-# --- STYLE BLEU CIEL (inchangé) ---
+# --- STYLE BLEU CIEL ---
 st.markdown("""
 <style>
     [data-testid="stAppViewContainer"] {
@@ -71,61 +70,76 @@ supabase: Client = create_client(
 )
 
 # ============================================
-# 🆕 SYSTÈME DE FALLBACK ENTRE LLMs
+# 🆕 SYSTÈME DE FALLBACK GROQ → GEMINI
 # ============================================
 
 class LLMManager:
-    """Gère les appels aux différents LLMs avec fallback automatique"""
+    """Gère les appels Groq puis Gemini en fallback"""
     
     def __init__(self):
         self.providers = []
         self._init_providers()
     
     def _init_providers(self):
-        """Initialise les LLMs disponibles dans l'ordre de priorité"""
+        """Initialise Groq en priorité, puis Gemini"""
         
-        # 1️⃣ GEMINI (priorité 1)
+        # 1️⃣ GROQ (priorité 1 - gratuit et rapide)
+        if os.getenv("GROQ_API_KEY"):
+            self.providers.append({
+                "name": "Groq LLaMA 3.3 70B",
+                "api_key": os.getenv("GROQ_API_KEY"),
+                "type": "groq"
+            })
+        
+        # 2️⃣ GEMINI (priorité 2 - fallback)
         if os.getenv("GEMINI_API_KEY"):
             try:
                 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
                 model = genai.GenerativeModel('gemini-2.0-flash-exp')
-                # Test rapide
-                model.generate_content("test", generation_config={"max_output_tokens": 5})
                 self.providers.append({
                     "name": "Gemini 2.0 Flash",
                     "client": model,
                     "type": "gemini"
                 })
             except Exception as e:
-                st.warning(f"⚠️ Gemini indisponible: {str(e)[:100]}")
-        
-       
-        
-        # 3️⃣ GROQ (priorité 3 - gratuit et rapide)
-        if os.getenv("GROQ_API_KEY"):
-            self.providers.append({
-                "name": "Groq LLaMA",
-                "api_key": os.getenv("GROQ_API_KEY"),
-                "type": "groq"
-            })
-        
-        
+                st.warning(f"⚠️ Gemini non disponible: {str(e)[:100]}")
         
         if not self.providers:
-            st.error("❌ Aucun LLM configuré ! Ajoutez au moins une clé API dans .env")
+            st.error("❌ Aucun LLM configuré ! Ajoutez GROQ_API_KEY ou GEMINI_API_KEY dans .env")
             st.stop()
     
     def analyze(self, prompt: str, max_tokens: int = 2000) -> dict:
         """
-        Analyse avec fallback automatique
+        Analyse avec fallback automatique Groq → Gemini
         Retourne: {"success": bool, "result": str, "provider": str, "error": str}
         """
         
-        for i, provider in enumerate(self.providers):
+        for provider in self.providers:
             try:
-                st.info(f"🤖 Tentative avec {provider['name']} ({i+1}/{len(self.providers)})")
+                if provider["type"] == "groq":
+                    response = requests.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {provider['api_key']}",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "model": "llama-3.3-70b-versatile",
+                            "messages": [{"role": "user", "content": prompt}],
+                            "max_tokens": max_tokens,
+                            "temperature": 0.3
+                        },
+                        timeout=30
+                    )
+                    response.raise_for_status()
+                    return {
+                        "success": True,
+                        "result": response.json()["choices"][0]["message"]["content"],
+                        "provider": provider["name"],
+                        "error": None
+                    }
                 
-                if provider["type"] == "gemini":
+                elif provider["type"] == "gemini":
                     response = provider["client"].generate_content(
                         prompt,
                         generation_config={"max_output_tokens": max_tokens, "temperature": 0.3}
@@ -136,79 +150,18 @@ class LLMManager:
                         "provider": provider["name"],
                         "error": None
                     }
-                
-                elif provider["type"] == "claude":
-                    message = provider["client"].messages.create(
-                        model="claude-3-5-haiku-20241022",
-                        max_tokens=max_tokens,
-                        messages=[{"role": "user", "content": prompt}]
-                    )
-                    return {
-                        "success": True,
-                        "result": message.content[0].text,
-                        "provider": provider["name"],
-                        "error": None
-                    }
-                
-                elif provider["type"] == "groq":
-                    response = requests.post(
-                        "https://api.groq.com/openai/v1/chat/completions",
-                        headers={"Authorization": f"Bearer {provider['api_key']}"},
-                        json={
-                            "model": "llama-3.3-70b-versatile",
-                            "messages": [{"role": "user", "content": prompt}],
-                            "max_tokens": max_tokens,
-                            "temperature": 0.3
-                        }
-                    )
-                    response.raise_for_status()
-                    return {
-                        "success": True,
-                        "result": response.json()["choices"][0]["message"]["content"],
-                        "provider": provider["name"],
-                        "error": None
-                    }
-                
-                elif provider["type"] == "together":
-                    response = requests.post(
-                        "https://api.together.xyz/v1/chat/completions",
-                        headers={"Authorization": f"Bearer {provider['api_key']}"},
-                        json={
-                            "model": "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
-                            "messages": [{"role": "user", "content": prompt}],
-                            "max_tokens": max_tokens,
-                            "temperature": 0.3
-                        }
-                    )
-                    response.raise_for_status()
-                    return {
-                        "success": True,
-                        "result": response.json()["choices"][0]["message"]["content"],
-                        "provider": provider["name"],
-                        "error": None
-                    }
             
             except Exception as e:
                 error_msg = str(e)
-                st.warning(f"❌ {provider['name']} a échoué: {error_msg[:150]}")
-                
-                # Si c'est le dernier provider, on retourne l'erreur
-                if i == len(self.providers) - 1:
-                    return {
-                        "success": False,
-                        "result": None,
-                        "provider": None,
-                        "error": f"Tous les LLMs ont échoué. Dernière erreur: {error_msg}"
-                    }
-                
-                # Sinon on continue avec le prochain
+                # Continue silencieusement au prochain provider
                 continue
         
+        # Si tous ont échoué
         return {
             "success": False,
             "result": None,
             "provider": None,
-            "error": "Aucun LLM disponible"
+            "error": "Tous les LLMs sont indisponibles. Réessayez plus tard."
         }
 
 # Initialiser le gestionnaire
@@ -218,7 +171,7 @@ llm_manager = LLMManager()
 # FIN SYSTÈME DE FALLBACK
 # ============================================
 
-# Session (inchangé)
+# Session
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 if 'user' not in st.session_state:
@@ -226,7 +179,7 @@ if 'user' not in st.session_state:
 if 'profile_completed' not in st.session_state:
     st.session_state.profile_completed = False
 
-# --- FONCTIONS BASE DE DONNÉES (inchangées) ---
+# --- FONCTIONS BASE DE DONNÉES ---
 def signup_user(data):
     try:
         user_auth = supabase.auth.sign_up({
@@ -332,13 +285,7 @@ def save_soumission(entreprise_id, soumission_data):
 # --- APPLICATION ---
 st.title("⚡ MOKAFAD - Solution Soumission IA")
 
-# Afficher les LLMs disponibles dans la sidebar
-with st.sidebar:
-    st.markdown("### 🤖 LLMs configurés")
-    for i, provider in enumerate(llm_manager.providers, 1):
-        st.success(f"{i}. {provider['name']}")
-
-# --- AUTHENTIFICATION (inchangé) ---
+# --- AUTHENTIFICATION ---
 if not st.session_state.logged_in:
     tab1, tab2 = st.tabs(["🔐 Connexion", "📝 Inscription"])
     with tab1:
@@ -358,7 +305,7 @@ if not st.session_state.logged_in:
                 st.success("✅ Compte créé ! Veuillez compléter votre profil.")
                 st.rerun()
 
-# --- PROFIL À COMPLÉTER (inchangé) ---
+# --- PROFIL À COMPLÉTER ---
 elif not st.session_state.profile_completed:
     st.warning("⚠️ Veuillez compléter votre profil pour continuer")
     profile_data = forms.profile_completion_form(st.session_state.user)
@@ -415,6 +362,10 @@ else:
                     st.write(f"**Statut:** {item['statut']}")
                     st.write(f"**Recommandation:** {item.get('recommendation', 'N/A')}")
                     st.write(f"**Score:** {item.get('score', 'N/A')}")
+                    # Afficher le LLM utilisé si disponible
+                    if item.get('analyse_json') and isinstance(item['analyse_json'], dict):
+                        llm_used = item['analyse_json'].get('llm_used', 'N/A')
+                        st.write(f"**Modèle IA:** {llm_used}")
         else:
             st.info("📭 Aucune analyse récente")
     
@@ -460,12 +411,10 @@ else:
                         st.error(f"❌ {analysis_result['error']}")
                         st.stop()
                     
-                    # Afficher quel LLM a été utilisé
-                    st.success(f"✅ Analyse réussie avec **{analysis_result['provider']}**")
-                    
                     result = analysis_result["result"]
                     
                     st.markdown("### 📋 Résultat de l'analyse IA")
+                    st.caption(f"🤖 Modèle utilisé: **{analysis_result['provider']}**")
                     st.markdown("---")
                     st.markdown(result)
                     
