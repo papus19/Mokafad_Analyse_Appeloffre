@@ -99,7 +99,7 @@ if missing:
     st.code("""
 📁 Fichier .env requis :
 SUPABASE_URL=https://votre-projet.supabase.co    
-SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.xxxxx
+SUPABASE_ANON_KEY=eyJxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 # Au moins une clé API IA (Gemini en priorité):
 GEMINI_API_KEY=AIzaSyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
