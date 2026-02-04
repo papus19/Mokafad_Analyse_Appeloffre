@@ -336,35 +336,11 @@ def login_user(email, password):
             st.success(f"✅ Bienvenue {result.data[0].get('nom_entreprise', 'Utilisateur')} !")
             return True
         else:
-            # ⚠️ Profil incomplet - CRÉER UN PROFIL MINIMAL
-            st.warning("⚠️ Profil incomplet détecté. Création automatique...")
-            
-            # Créer un profil minimal dans la base
-            minimal_profile = {
-                "contact_email": email,
-                "user_id": session.user.id,
-                "nom_entreprise": f"Entreprise_{session.user.id[:8]}",
-                "contact_nom": email.split('@')[0],
-                "specialites": [],
-                "adresse": "",
-                "ville": "",
-                "province": "Québec",
-                "code_postal": "",
-                "pays": "Canada",
-                "contact_telephone": ""
-            }
-            
-            created = supabase.table('entreprises').insert(minimal_profile).execute()
-            
-            if created.data:
-                st.session_state.user = created.data[0]
-                st.session_state.logged_in = True
-                st.session_state.profile_completed = False
-                st.info("✅ Profil créé. Veuillez le compléter.")
-                return True
-            else:
-                st.error("❌ Impossible de créer le profil")
-                return False
+            # ❌ Aucun profil trouvé
+            st.error("❌ Aucun profil entreprise trouvé pour cet utilisateur.")
+            st.info("💡 Veuillez d'abord créer votre compte via l'onglet 'Inscription'")
+            supabase.auth.sign_out()
+            return False
             
     except Exception as e:
         st.error(f"❌ Erreur connexion: {str(e)}")
