@@ -238,30 +238,21 @@ def signup_user(data):
         return False
 
 def login_user(email, password):
-    """Fonction de connexion avec debug amélioré"""
     try:
-        # Vérification des champs vides
-        if not email or not password:
-            st.error("❌ Email et mot de passe requis")
-            return False
+        session = supabase.auth.sign_in_with_password({"email": email, "password": password})
+        # Appliquer le token pour les futures requêtes
+        supabase.postgrest.auth(session.session.access_token)
         
-        # Tentative de connexion
-        session = supabase.auth.sign_in_with_password({
-            "email": email.strip(), 
-            "password": password
-        })
-        
-        # Vérification si la session existe
-        if not session or not session.user:
-            st.error("❌ Connexion échouée - session invalide")
-            return False
-        
-        # Récupération des données entreprise
-        result = supabase.table('entreprises').select("*").eq('contact_email', email.strip()).execute()
-        
-        if not result.data or len(result.data) == 0:
-            st.error("❌ Aucune entreprise trouvée pour cet email")
-            return False
+        result = supabase.table('entreprises').select("*").eq('contact_email', email).execute()
+        if result.data:
+            st.session_state.user = result.data[0]
+            st.session_state.logged_in = True
+            st.session_state.profile_completed = bool(st.session_state.user.get('logo_url'))
+            return True
+        return False
+    except Exception as e:
+        st.error(f"❌ Erreur: {str(e)}")
+        return False
         
         # Succès
         st.session_state.user = result.data[0]
