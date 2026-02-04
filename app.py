@@ -175,14 +175,10 @@ if 'access_token' not in st.session_state:
     st.session_state.access_token = None
 
 def apply_supabase_auth():
+    """Applique le token JWT si disponible"""
     token = st.session_state.get('access_token')
     if token and isinstance(token, str) and token.strip():
         supabase.postgrest.auth(token)
-    else:
-        supabase.postgrest.auth(None)
-
-def clear_supabase_auth():
-    pass  # inutile, supprimé pour sécurité
 
 # --- FONCTIONS BASE DE DONNÉES ---
 def signup_user(data):
@@ -229,7 +225,6 @@ def signup_user(data):
 
     except Exception as e:
         st.error(f"❌ Erreur inscription: {str(e)}")
-        clear_supabase_auth()
         return False
 
 def login_user(email, password):
@@ -247,11 +242,9 @@ def login_user(email, password):
         return False
     except Exception as e:
         st.error(f"❌ Erreur connexion: {str(e)}")
-        clear_supabase_auth()
         return False
 
 def get_user_by_email(email):
-    # Pas d'auth ici → appel anonyme autorisé par RLS (politique SELECT pour public ou authenticated)
     result = supabase.table('entreprises').select("*").eq('contact_email', email).execute()
     return result.data[0] if result.data else None
 
@@ -361,20 +354,18 @@ else:
         st.write(f"🏢 **{user['nom_entreprise']}**")
         st.write(f"📍 {user['ville']}, {user['province']}")
         if st.button("🚪 Déconnexion", use_container_width=False):
-    try:
-        supabase.auth.sign_out()
-    except Exception as e:
-        st.warning(f"⚠️ Déconnexion partielle : {str(e)[:80]}")
-    # Pas de clear_supabase_auth() — inutile et dangereux
-    st.session_state.clear()
-    st.rerun()
+            try:
+                supabase.auth.sign_out()
+            except Exception:
+                pass
+            st.session_state.clear()
+            st.rerun()
     
-    # Charger les projets antérieurs une fois
+    # Charger les projets antérieurs
     apply_supabase_auth()
     projets_response = supabase.table('projets_antecedents').select("*").eq('entreprise_id', user['id']).execute()
     projets_antecedents = projets_response.data or []
 
-    # Onglets principaux + Profil
     tab1, tab2, tab3, tab4 = st.tabs([
         "📋 Tableau de bord", 
         "🔍 Nouvelle analyse", 
@@ -429,7 +420,6 @@ else:
                     visit_min = add_business_days(today, 3).strftime("%Y-%m-%d")
                     today_str = today.strftime("%Y-%m-%d")
 
-                    # Catégorie de l'entreprise
                     specialites_str = " ".join(user.get('specialites', [])).lower()
                     categorie_entreprise = "Résidentiel" if any(kw in specialites_str for kw in ['résidentiel', 'maison', 'habitation', 'residential']) else "Commercial"
 
@@ -440,63 +430,55 @@ Vous êtes un expert en soumission d'appels d'offres au Québec. Analysez object
 - Nom : {user['nom_entreprise']}
 - Spécialités : {', '.join(user.get('specialites', [])) or 'Non spécifiées'}
 - Catégorie cible : {categorie_entreprise}
-- Expériences antérieures : {len(projets_antecedents)} projets similaires (voir détails ci-dessous)
+- Expériences antérieures : {len(projets_antecedents)} projets similaires
 - Disponibilité : Vous avez besoin de 5 jours ouvrables minimum pour préparer une soumission.
-- Contact client possible : Oui (vous avez un numéro de téléphone et un email).
+- Contact client possible : Oui.
 
 ### Projets antérieurs pertinents :
 {chr(10).join([f"- {p['nom_projet']} ({p['montant']}$, {p['duree_jours']} jours)" for p in projets_antecedents[:3]]) or "Aucun projet antérieur fourni."}
 
 ### Contexte temporel :
 - Date du jour : {today_str}
-- Date minimale pour une visite de chantier : {visit_min} (au moins 3 jours ouvrables après aujourd’hui)
-- Date limite minimale pour soumissionner : {deadline_min} (au moins 5 jours ouvrables après aujourd’hui)
+- Date minimale visite : {visit_min}
+- Date limite soumission : {deadline_min}
 
-### Appel d'offre à analyser :
+### Appel d'offre :
 {text}
 
-### Instructions strictes :
-1. NE FAITES AUCUNE HYPOTHÈSE. Si une information n’est pas dans le document, dites "non mentionné".
-2. Vérifiez les critères suivants :
-   - **Catégorie** : L’appel est-il résidentiel ou commercial ? Votre entreprise correspond-elle ?
-   - **Visite de chantier** : Si une date de visite est mentionnée, est-elle ≥ {visit_min} ?
-   - **Expérience similaire** : Le document décrit-il un type de projet que vous avez déjà réalisé ?
-   - **Délai de soumission** : La date limite est-elle ≥ {deadline_min} ?
-   - **Contact client** : Le document indique-t-il un contact ? (vous pouvez toujours appeler, mais vérifiez si requis)
-
+### Instructions :
+1. NE FAITES AUCUNE HYPOTHÈSE. Si info absente → "non mentionné".
+2. Vérifiez :
+   - Catégorie correspondante ?
+   - Visite ≥ {visit_min} ?
+   - Expérience similaire ?
+   - Délai ≥ {deadline_min} ?
+   - Contact client requis ?
 3. Recommandation :
-   - **GO** : Tous les critères de base sont remplis.
-   - **PEUT-ÊTRE** : Manque seulement l’expérience similaire, mais autres critères OK.
-   - **NO-GO** : Plus d’un critère manquant.
+   - GO : tous critères OK
+   - PEUT-ÊTRE : manque expérience seulement
+   - NO-GO : autre cas
+4. Structure :
+   - **Recommandation** : [...]
+   - **Score** : [...]
+   - **Vos forces** : [...]
+   - **Points de vigilance** : [...]
+   - **Actions recommandées** : [...]
+   - **Justification** : [...]
 
-4. Structurez votre réponse ainsi :
-   - **Recommandation** : [GO / PEUT-ÊTRE / NO-GO]
-   - **Score** : [0–100]
-   - **Vos forces pour cet appel d'offre** :
-     - ...
-   - **Points de vigilance** :
-     - ...
-   - **Actions recommandées** :
-     - ...
-   - **Justification concise** : ...
-
-Utilisez un ton professionnel, courtois, et adressez-vous à l'utilisateur avec "vous". Ne mentionnez pas votre rôle d'IA.
+Utilisez "vous", ton courtois, pas d'IA.
 """
 
                     analysis_result = llm_manager.analyze(prompt, max_tokens=2000)
-                    
                     if not analysis_result["success"]:
                         st.error(f"❌ {analysis_result['error']}")
                         st.stop()
                     
                     result = analysis_result["result"]
-                    
                     st.markdown("### 📋 Résultat de l'analyse IA")
                     st.caption(f"🤖 Modèle utilisé: **{analysis_result['provider']}**")
                     st.markdown("---")
                     st.markdown(result)
                     
-                    # Extraction recommandation
                     rec = "INCONNU"
                     if "GO" in result.upper() and "NO-GO" not in result.upper() and "NO GO" not in result.upper():
                         rec = "GO"
@@ -505,7 +487,6 @@ Utilisez un ton professionnel, courtois, et adressez-vous à l'utilisateur avec 
                     elif "PEUT-ÊTRE" in result.upper() or "MAYBE" in result.upper():
                         rec = "PEUT-ÊTRE"
                     
-                    # Extraction score
                     score = 0
                     score_match = re.search(r"Score\s*[:\-]?\s*(\d+)", result, re.IGNORECASE)
                     if score_match:
@@ -515,10 +496,7 @@ Utilisez un ton professionnel, courtois, et adressez-vous à l'utilisateur avec 
                         "numero_projet": numero_projet,
                         "nom_projet": nom_projet,
                         "document": uploaded_file,
-                        "analyse_json": {
-                            "raw_response": result,
-                            "llm_used": analysis_result["provider"]
-                        },
+                        "analyse_json": {"raw_response": result, "llm_used": analysis_result["provider"]},
                         "recommendation": rec,
                         "score": score,
                         "statut": "qualifie" if rec == "GO" else "non_qualifie"
@@ -526,9 +504,9 @@ Utilisez un ton professionnel, courtois, et adressez-vous à l'utilisateur avec 
                     
                     soumission = save_soumission(user['id'], soumission_data)
                     if soumission:
-                        st.success("✅ Analyse sauvegardée dans la base de données !")
+                        st.success("✅ Analyse sauvegardée !")
                     else:
-                        st.error("❌ Erreur lors de la sauvegarde")
+                        st.error("❌ Erreur sauvegarde")
                 
                 except Exception as e:
                     st.error(f"❌ Erreur: {str(e)}")
