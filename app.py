@@ -308,34 +308,56 @@ def signup_user(data):
         st.error(f"❌ Erreur: {str(e)}")
         return False
 
+def signup_user(data):
+    try:
+        # ... [code existant]
+        
+        # ✅ Vérifiez que l'insertion a réussi
+        result = supabase.table('entreprises').insert(entreprise_data).execute()
+        if not result.data:
+            raise Exception("❌ Échec de création de l'entreprise")
+        
+        st.session_state.user = result.data[0]
+        st.session_state.logged_in = True
+        st.session_state.profile_completed = False
+        return True
+        
+    except Exception as e:
+        st.error(f"❌ Erreur: {str(e)}")
+        return False
+        
 def login_user(email, password):
     try:
-        st.info(f"🔍 Tentative de connexion pour : {email}")
-        
-        # ✅ Authentification Supabase
         session = supabase.auth.sign_in_with_password({"email": email, "password": password})
-        
         st.success(f"✅ Authentification réussie - User ID: {session.user.id}")
         
-        # ✅ Récupération des données entreprise
+        # 🔍 Chercher l'entreprise
         result = supabase.table('entreprises').select("*").eq('contact_email', email).execute()
-        
-        st.info(f"📊 Données trouvées : {len(result.data) if result.data else 0} entreprise(s)")
         
         if result.data:
             st.session_state.user = result.data[0]
             st.session_state.logged_in = True
             st.session_state.profile_completed = bool(st.session_state.user.get('logo_url'))
-            
-            st.success("✅ Connexion réussie ! Redirection...")
-            st.rerun()  # ✅ Redirection immédiate
+            st.success("✅ Connexion réussie !")
             return True
+            
         else:
-            st.error("❌ Aucune entreprise trouvée pour cet email")
-            return False
+            # ✅ CAS CRITIQUE : Aucune entreprise trouvée (mais utilisateur authentifié)
+            st.warning("⚠️ Votre profil n'est pas complété. Veuillez compléter votre profil.")
+            
+            # Créer un état temporaire pour rediriger vers la complétion
+            st.session_state.user = {
+                "contact_email": email,
+                "user_id": session.user.id
+            }
+            st.session_state.logged_in = True
+            st.session_state.profile_completed = False
+            
+            st.success("✅ Redirection vers la complétion du profil...")
+            return True  # ✅ Retourne True pour autoriser la redirection
             
     except Exception as e:
-        st.error(f"❌ Erreur de connexion : {str(e)}")
+        st.error(f"❌ Erreur: {str(e)}")
         return False
 
 def get_user_by_email(email):
