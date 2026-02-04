@@ -6,12 +6,14 @@ from supabase import create_client, Client
 from pypdf import PdfReader
 import forms
 import storage
+import anthropic  # pip install anthropic
+import requests  # Pour Groq/Together AI
 
 # --- CONFIGURATION ---
 load_dotenv()
 st.set_page_config(page_title="⚡ MOKAFAD - Solution Soumission IA", page_icon="⚡", layout="wide")
 
-# --- STYLE BLEU CIEL ---
+# --- STYLE BLEU CIEL (inchangé) ---
 st.markdown("""
 <style>
     [data-testid="stAppViewContainer"] {
@@ -56,7 +58,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- VÉRIFICATION DES CLÉS ---
-required_vars = ["SUPABASE_URL", "SUPABASE_ANON_KEY", "GEMINI_API_KEY"]
+required_vars = ["SUPABASE_URL", "SUPABASE_ANON_KEY"]
 missing = [var for var in required_vars if not os.getenv(var)]
 if missing:
     st.error(f"❌ Variables manquantes dans .env : {', '.join(missing)}")
@@ -68,18 +70,171 @@ supabase: Client = create_client(
     os.getenv("SUPABASE_ANON_KEY")
 )
 
-# --- CONFIGURATION GEMINI ---
-try:
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = ""
-    genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-    model_test = genai.GenerativeModel('gemini-2.5-flash')
-    response_test = model_test.generate_content("test", generation_config={"max_output_tokens": 5})
-except Exception as e:
-    st.error(f"❌ Erreur Gemini : {str(e)}")
-    st.info("💡 Vérifie que ta clé GEMINI_API_KEY commence par 'AIzaSy' et est valide sur https://aistudio.google.com/app/apikey")
-    st.stop()
+# ============================================
+# 🆕 SYSTÈME DE FALLBACK ENTRE LLMs
+# ============================================
 
-# Session
+class LLMManager:
+    """Gère les appels aux différents LLMs avec fallback automatique"""
+    
+    def __init__(self):
+        self.providers = []
+        self._init_providers()
+    
+    def _init_providers(self):
+        """Initialise les LLMs disponibles dans l'ordre de priorité"""
+        
+        # 1️⃣ GEMINI (priorité 1)
+        if os.getenv("GEMINI_API_KEY"):
+            try:
+                genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+                model = genai.GenerativeModel('gemini-2.0-flash-exp')
+                # Test rapide
+                model.generate_content("test", generation_config={"max_output_tokens": 5})
+                self.providers.append({
+                    "name": "Gemini 2.0 Flash",
+                    "client": model,
+                    "type": "gemini"
+                })
+            except Exception as e:
+                st.warning(f"⚠️ Gemini indisponible: {str(e)[:100]}")
+        
+        # 2️⃣ CLAUDE (priorité 2)
+        if os.getenv("ANTHROPIC_API_KEY"):
+            try:
+                client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+                self.providers.append({
+                    "name": "Claude Haiku",
+                    "client": client,
+                    "type": "claude"
+                })
+            except Exception as e:
+                st.warning(f"⚠️ Claude indisponible: {str(e)[:100]}")
+        
+        # 3️⃣ GROQ (priorité 3 - gratuit et rapide)
+        if os.getenv("GROQ_API_KEY"):
+            self.providers.append({
+                "name": "Groq LLaMA",
+                "api_key": os.getenv("GROQ_API_KEY"),
+                "type": "groq"
+            })
+        
+        # 4️⃣ TOGETHER AI (priorité 4)
+        if os.getenv("TOGETHER_API_KEY"):
+            self.providers.append({
+                "name": "Together AI",
+                "api_key": os.getenv("TOGETHER_API_KEY"),
+                "type": "together"
+            })
+        
+        if not self.providers:
+            st.error("❌ Aucun LLM configuré ! Ajoutez au moins une clé API dans .env")
+            st.stop()
+    
+    def analyze(self, prompt: str, max_tokens: int = 2000) -> dict:
+        """
+        Analyse avec fallback automatique
+        Retourne: {"success": bool, "result": str, "provider": str, "error": str}
+        """
+        
+        for i, provider in enumerate(self.providers):
+            try:
+                st.info(f"🤖 Tentative avec {provider['name']} ({i+1}/{len(self.providers)})")
+                
+                if provider["type"] == "gemini":
+                    response = provider["client"].generate_content(
+                        prompt,
+                        generation_config={"max_output_tokens": max_tokens, "temperature": 0.3}
+                    )
+                    return {
+                        "success": True,
+                        "result": response.text,
+                        "provider": provider["name"],
+                        "error": None
+                    }
+                
+                elif provider["type"] == "claude":
+                    message = provider["client"].messages.create(
+                        model="claude-3-5-haiku-20241022",
+                        max_tokens=max_tokens,
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+                    return {
+                        "success": True,
+                        "result": message.content[0].text,
+                        "provider": provider["name"],
+                        "error": None
+                    }
+                
+                elif provider["type"] == "groq":
+                    response = requests.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {provider['api_key']}"},
+                        json={
+                            "model": "llama-3.3-70b-versatile",
+                            "messages": [{"role": "user", "content": prompt}],
+                            "max_tokens": max_tokens,
+                            "temperature": 0.3
+                        }
+                    )
+                    response.raise_for_status()
+                    return {
+                        "success": True,
+                        "result": response.json()["choices"][0]["message"]["content"],
+                        "provider": provider["name"],
+                        "error": None
+                    }
+                
+                elif provider["type"] == "together":
+                    response = requests.post(
+                        "https://api.together.xyz/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {provider['api_key']}"},
+                        json={
+                            "model": "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+                            "messages": [{"role": "user", "content": prompt}],
+                            "max_tokens": max_tokens,
+                            "temperature": 0.3
+                        }
+                    )
+                    response.raise_for_status()
+                    return {
+                        "success": True,
+                        "result": response.json()["choices"][0]["message"]["content"],
+                        "provider": provider["name"],
+                        "error": None
+                    }
+            
+            except Exception as e:
+                error_msg = str(e)
+                st.warning(f"❌ {provider['name']} a échoué: {error_msg[:150]}")
+                
+                # Si c'est le dernier provider, on retourne l'erreur
+                if i == len(self.providers) - 1:
+                    return {
+                        "success": False,
+                        "result": None,
+                        "provider": None,
+                        "error": f"Tous les LLMs ont échoué. Dernière erreur: {error_msg}"
+                    }
+                
+                # Sinon on continue avec le prochain
+                continue
+        
+        return {
+            "success": False,
+            "result": None,
+            "provider": None,
+            "error": "Aucun LLM disponible"
+        }
+
+# Initialiser le gestionnaire
+llm_manager = LLMManager()
+
+# ============================================
+# FIN SYSTÈME DE FALLBACK
+# ============================================
+
+# Session (inchangé)
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 if 'user' not in st.session_state:
@@ -87,7 +242,7 @@ if 'user' not in st.session_state:
 if 'profile_completed' not in st.session_state:
     st.session_state.profile_completed = False
 
-# --- FONCTIONS BASE DE DONNÉES ---
+# --- FONCTIONS BASE DE DONNÉES (inchangées) ---
 def signup_user(data):
     try:
         user_auth = supabase.auth.sign_up({
@@ -166,7 +321,6 @@ def add_projet_antecedent(projet_data):
 
 def save_soumission(entreprise_id, soumission_data):
     try:
-        # Copie des données sans l'objet UploadedFile
         data_to_save = {
             "entreprise_id": entreprise_id,
             "numero_projet": soumission_data.get("numero_projet"),
@@ -177,17 +331,14 @@ def save_soumission(entreprise_id, soumission_data):
             "statut": soumission_data.get("statut")
         }
         
-        # Upload du document si présent (optionnel - ne bloque pas la sauvegarde)
         if soumission_data.get("document"):
             try:
                 doc_url = storage.upload_soumission(supabase, soumission_data["document"])
                 if doc_url:
                     data_to_save["document_url"] = doc_url
-            except Exception as upload_error:
-                # Silencieux - l'analyse peut être sauvegardée sans le fichier
+            except Exception:
                 pass
         
-        # Insertion dans la base
         result = supabase.table('soumissions').insert(data_to_save).execute()
         return result.data[0] if result.data else None
     except Exception as e:
@@ -197,7 +348,13 @@ def save_soumission(entreprise_id, soumission_data):
 # --- APPLICATION ---
 st.title("⚡ MOKAFAD - Solution Soumission IA")
 
-# --- AUTHENTIFICATION ---
+# Afficher les LLMs disponibles dans la sidebar
+with st.sidebar:
+    st.markdown("### 🤖 LLMs configurés")
+    for i, provider in enumerate(llm_manager.providers, 1):
+        st.success(f"{i}. {provider['name']}")
+
+# --- AUTHENTIFICATION (inchangé) ---
 if not st.session_state.logged_in:
     tab1, tab2 = st.tabs(["🔐 Connexion", "📝 Inscription"])
     with tab1:
@@ -217,7 +374,7 @@ if not st.session_state.logged_in:
                 st.success("✅ Compte créé ! Veuillez compléter votre profil.")
                 st.rerun()
 
-# --- PROFIL À COMPLÉTER ---
+# --- PROFIL À COMPLÉTER (inchangé) ---
 elif not st.session_state.profile_completed:
     st.warning("⚠️ Veuillez compléter votre profil pour continuer")
     profile_data = forms.profile_completion_form(st.session_state.user)
@@ -284,11 +441,13 @@ else:
             nom_projet = st.text_input("📋 Nom du projet")
             uploaded_file = st.file_uploader("📄 PDF Appel d'offre", type=['pdf'])
             submit = st.form_submit_button("🚀 Lancer l'analyse", use_container_width=False)
+        
         if submit and uploaded_file:
             with st.spinner("🤖 Analyse IA en cours..."):
                 try:
                     reader = PdfReader(uploaded_file)
                     text = " ".join([page.extract_text() or "" for page in reader.pages])[:8000]
+                    
                     context = f"""
                     Entreprise: {user['nom_entreprise']}
                     Spécialités: {', '.join(user.get('specialites', []))}
@@ -296,6 +455,7 @@ else:
                     Licence RBQ: {user.get('licence_rbq', 'N/A')}
                     Adresse: {user.get('adresse', '')}, {user.get('ville', '')}, {user.get('province', '')}
                     """
+                    
                     prompt = f"""
                     {context}
                     Analysez cet appel d'offre et donnez:
@@ -308,22 +468,22 @@ else:
                     Document:
                     {text}
                     """
-                    model = genai.GenerativeModel('gemini-2.5-flash')
-                    response = model.generate_content(
-                        prompt,
-                        generation_config={"max_output_tokens": 2000, "temperature": 0.3}
-                    )
-                    result = response.text
                     
-                    # Debug - Afficher le résultat brut
+                    # 🆕 UTILISATION DU SYSTÈME DE FALLBACK
+                    analysis_result = llm_manager.analyze(prompt, max_tokens=2000)
+                    
+                    if not analysis_result["success"]:
+                        st.error(f"❌ {analysis_result['error']}")
+                        st.stop()
+                    
+                    # Afficher quel LLM a été utilisé
+                    st.success(f"✅ Analyse réussie avec **{analysis_result['provider']}**")
+                    
+                    result = analysis_result["result"]
+                    
                     st.markdown("### 📋 Résultat de l'analyse IA")
                     st.markdown("---")
-                    
-                    if result and len(result) > 0:
-                        st.markdown(result)
-                    else:
-                        st.warning("⚠️ L'analyse n'a pas retourné de résultat. Contenu du PDF peut-être vide ?")
-                        st.write(f"Longueur du texte extrait: {len(text)} caractères")
+                    st.markdown(result)
                     
                     # Extraction de la recommandation
                     rec = "INCONNU"
@@ -339,7 +499,10 @@ else:
                         "numero_projet": numero_projet,
                         "nom_projet": nom_projet,
                         "document": uploaded_file,
-                        "analyse_json": {"raw_response": result},
+                        "analyse_json": {
+                            "raw_response": result,
+                            "llm_used": analysis_result["provider"]
+                        },
                         "recommendation": rec,
                         "score": 0,
                         "statut": "qualifie" if rec == "GO" else "non_qualifie"
@@ -348,9 +511,9 @@ else:
                     soumission = save_soumission(user['id'], soumission_data)
                     if soumission:
                         st.success("✅ Analyse sauvegardée dans la base de données !")
-                        st.info("ℹ️ Note: Le fichier PDF n'est pas stocké (bucket Supabase non configuré)")
                     else:
                         st.error("❌ Erreur lors de la sauvegarde")
+                
                 except Exception as e:
                     st.error(f"❌ Erreur: {str(e)}")
     
