@@ -7,6 +7,8 @@ from pypdf import PdfReader
 import forms
 import storage
 import requests
+from datetime import datetime, timedelta
+import re
 
 # --- CONFIGURATION ---
 load_dotenv()
@@ -56,6 +58,18 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# --- UTILITAIRES DATE ---
+def is_business_day(date):
+    return date.weekday() < 5  # Lundi=0, Dimanche=6
+
+def add_business_days(start_date, days):
+    current = start_date
+    while days > 0:
+        current += timedelta(days=1)
+        if is_business_day(current):
+            days -= 1
+    return current
+
 # --- VÉRIFICATION DES CLÉS ---
 required_vars = ["SUPABASE_URL", "SUPABASE_ANON_KEY"]
 missing = [var for var in required_vars if not os.getenv(var)]
@@ -74,24 +88,17 @@ supabase: Client = create_client(
 # ============================================
 
 class LLMManager:
-    """Gère les appels Groq puis Gemini en fallback"""
-    
     def __init__(self):
         self.providers = []
         self._init_providers()
     
     def _init_providers(self):
-        """Initialise Groq en priorité, puis Gemini"""
-        
-        # 1️⃣ GROQ (priorité 1 - gratuit et rapide)
         if os.getenv("GROQ_API_KEY"):
             self.providers.append({
                 "name": "Groq LLaMA 3.3 70B",
                 "api_key": os.getenv("GROQ_API_KEY"),
                 "type": "groq"
             })
-        
-        # 2️⃣ GEMINI (priorité 2 - fallback)
         if os.getenv("GEMINI_API_KEY"):
             try:
                 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
@@ -103,16 +110,11 @@ class LLMManager:
                 })
             except Exception as e:
                 st.warning(f"⚠️ Gemini non disponible: {str(e)[:100]}")
-        
         if not self.providers:
             st.error("❌ Aucun LLM configuré ! Ajoutez GROQ_API_KEY ou GEMINI_API_KEY dans .env")
             st.stop()
     
     def analyze(self, prompt: str, max_tokens: int = 2000) -> dict:
-        """
-        Analyse avec fallback automatique Groq → Gemini
-        Retourne: {"success": bool, "result": str, "provider": str, "error": str}
-        """
         for provider in self.providers:
             try:
                 if provider["type"] == "groq":
@@ -137,7 +139,6 @@ class LLMManager:
                         "provider": provider["name"],
                         "error": None
                     }
-                
                 elif provider["type"] == "gemini":
                     response = provider["client"].generate_content(
                         prompt,
@@ -149,10 +150,8 @@ class LLMManager:
                         "provider": provider["name"],
                         "error": None
                     }
-            
-            except Exception as e:
+            except Exception:
                 continue
-        
         return {
             "success": False,
             "result": None,
@@ -176,15 +175,13 @@ if 'access_token' not in st.session_state:
     st.session_state.access_token = None
 
 def apply_supabase_auth():
-    """Applique le token s'il existe, sinon désactive l'auth (sûr pour les SELECT publics)"""
     token = st.session_state.get('access_token')
     if token and isinstance(token, str) and token.strip():
         supabase.postgrest.auth(token)
     else:
-        supabase.postgrest.auth(None)  # explicite : pas d'auth
+        supabase.postgrest.auth(None)
 
 def clear_supabase_auth():
-    """Supprime l'authentification du client"""
     supabase.postgrest.auth(None)
 
 # --- FONCTIONS BASE DE DONNÉES ---
@@ -202,7 +199,6 @@ def signup_user(data):
             "password": data["password"]
         })
 
-        # 🔍 Validation stricte du token
         if not session or not getattr(session, 'session', None) or not session.session.access_token:
             raise ValueError("Impossible de récupérer le token d'accès après connexion")
 
@@ -255,7 +251,7 @@ def login_user(email, password):
         return False
 
 def get_user_by_email(email):
-    apply_supabase_auth()  # au cas où
+    # Pas d'auth ici → appel anonyme autorisé par RLS (politique SELECT pour public ou authenticated)
     result = supabase.table('entreprises').select("*").eq('contact_email', email).execute()
     return result.data[0] if result.data else None
 
@@ -311,7 +307,6 @@ def save_soumission(entreprise_id, soumission_data):
 # --- APPLICATION PRINCIPALE ---
 st.title("⚡ MOKAFAD - Solution Soumission IA")
 
-# Restaurer l'auth si reload
 if st.session_state.logged_in and st.session_state.access_token:
     apply_supabase_auth()
 
@@ -371,7 +366,18 @@ else:
             st.session_state.clear()
             st.rerun()
     
-    tab1, tab2, tab3 = st.tabs(["📋 Tableau de bord", "🔍 Nouvelle analyse", "🏗️ Projets antérieurs"])
+    # Charger les projets antérieurs une fois
+    apply_supabase_auth()
+    projets_response = supabase.table('projets_antecedents').select("*").eq('entreprise_id', user['id']).execute()
+    projets_antecedents = projets_response.data or []
+
+    # Onglets principaux + Profil
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📋 Tableau de bord", 
+        "🔍 Nouvelle analyse", 
+        "🏗️ Projets antérieurs", 
+        "👤 Mon profil"
+    ])
     
     with tab1:
         st.header("📊 Tableau de bord")
@@ -415,27 +421,65 @@ else:
                     reader = PdfReader(uploaded_file)
                     text = " ".join([page.extract_text() or "" for page in reader.pages])[:8000]
                     
-                    context = f"""
-                    Entreprise: {user['nom_entreprise']}
-                    Spécialités: {', '.join(user.get('specialites', []))}
-                    NEQ: {user.get('numero_neq', 'N/A')}
-                    Licence RBQ: {user.get('licence_rbq', 'N/A')}
-                    Adresse: {user.get('adresse', '')}, {user.get('ville', '')}, {user.get('province', '')}
-                    """
-                    
+                    today = datetime.today()
+                    deadline_min = add_business_days(today, 5).strftime("%Y-%m-%d")
+                    visit_min = add_business_days(today, 3).strftime("%Y-%m-%d")
+                    today_str = today.strftime("%Y-%m-%d")
+
+                    # Catégorie de l'entreprise
+                    specialites_str = " ".join(user.get('specialites', [])).lower()
+                    categorie_entreprise = "Résidentiel" if any(kw in specialites_str for kw in ['résidentiel', 'maison', 'habitation', 'residential']) else "Commercial"
+
                     prompt = f"""
-                    {context}
-                    Analysez cet appel d'offre et donnez:
-                    1. Recommandation: GO / NO-GO / PEUT-ÊTRE
-                    2. Score sur 100
-                    3. Points forts (liste)
-                    4. Points faibles (liste)
-                    5. Actions recommandées (liste)
-                    6. Justification détaillée
-                    Document:
-                    {text}
-                    """
-                    
+Vous êtes un expert en soumission d'appels d'offres au Québec. Analysez objectivement l'appel d'offre fourni ci-dessous en vous basant UNIQUEMENT sur les informations suivantes :
+
+### Informations sur votre entreprise :
+- Nom : {user['nom_entreprise']}
+- Spécialités : {', '.join(user.get('specialites', [])) or 'Non spécifiées'}
+- Catégorie cible : {categorie_entreprise}
+- Expériences antérieures : {len(projets_antecedents)} projets similaires (voir détails ci-dessous)
+- Disponibilité : Vous avez besoin de 5 jours ouvrables minimum pour préparer une soumission.
+- Contact client possible : Oui (vous avez un numéro de téléphone et un email).
+
+### Projets antérieurs pertinents :
+{chr(10).join([f"- {p['nom_projet']} ({p['montant']}$, {p['duree_jours']} jours)" for p in projets_antecedents[:3]]) or "Aucun projet antérieur fourni."}
+
+### Contexte temporel :
+- Date du jour : {today_str}
+- Date minimale pour une visite de chantier : {visit_min} (au moins 3 jours ouvrables après aujourd’hui)
+- Date limite minimale pour soumissionner : {deadline_min} (au moins 5 jours ouvrables après aujourd’hui)
+
+### Appel d'offre à analyser :
+{text}
+
+### Instructions strictes :
+1. NE FAITES AUCUNE HYPOTHÈSE. Si une information n’est pas dans le document, dites "non mentionné".
+2. Vérifiez les critères suivants :
+   - **Catégorie** : L’appel est-il résidentiel ou commercial ? Votre entreprise correspond-elle ?
+   - **Visite de chantier** : Si une date de visite est mentionnée, est-elle ≥ {visit_min} ?
+   - **Expérience similaire** : Le document décrit-il un type de projet que vous avez déjà réalisé ?
+   - **Délai de soumission** : La date limite est-elle ≥ {deadline_min} ?
+   - **Contact client** : Le document indique-t-il un contact ? (vous pouvez toujours appeler, mais vérifiez si requis)
+
+3. Recommandation :
+   - **GO** : Tous les critères de base sont remplis.
+   - **PEUT-ÊTRE** : Manque seulement l’expérience similaire, mais autres critères OK.
+   - **NO-GO** : Plus d’un critère manquant.
+
+4. Structurez votre réponse ainsi :
+   - **Recommandation** : [GO / PEUT-ÊTRE / NO-GO]
+   - **Score** : [0–100]
+   - **Vos forces pour cet appel d'offre** :
+     - ...
+   - **Points de vigilance** :
+     - ...
+   - **Actions recommandées** :
+     - ...
+   - **Justification concise** : ...
+
+Utilisez un ton professionnel, courtois, et adressez-vous à l'utilisateur avec "vous". Ne mentionnez pas votre rôle d'IA.
+"""
+
                     analysis_result = llm_manager.analyze(prompt, max_tokens=2000)
                     
                     if not analysis_result["success"]:
@@ -449,6 +493,7 @@ else:
                     st.markdown("---")
                     st.markdown(result)
                     
+                    # Extraction recommandation
                     rec = "INCONNU"
                     if "GO" in result.upper() and "NO-GO" not in result.upper() and "NO GO" not in result.upper():
                         rec = "GO"
@@ -456,6 +501,12 @@ else:
                         rec = "NO-GO"
                     elif "PEUT-ÊTRE" in result.upper() or "MAYBE" in result.upper():
                         rec = "PEUT-ÊTRE"
+                    
+                    # Extraction score
+                    score = 0
+                    score_match = re.search(r"Score\s*[:\-]?\s*(\d+)", result, re.IGNORECASE)
+                    if score_match:
+                        score = int(score_match.group(1))
                     
                     soumission_data = {
                         "numero_projet": numero_projet,
@@ -466,7 +517,7 @@ else:
                             "llm_used": analysis_result["provider"]
                         },
                         "recommendation": rec,
-                        "score": 0,
+                        "score": score,
                         "statut": "qualifie" if rec == "GO" else "non_qualifie"
                     }
                     
@@ -516,3 +567,24 @@ else:
                         if projet.get('document_url'):
                             st.markdown(f"[📄 Voir document]({projet['document_url']})")
                     st.write(f"**Spécifications:** {projet['specifications']}")
+    
+    with tab4:
+        st.header("👤 Vos informations")
+        st.subheader("Entreprise")
+        st.write(f"**Nom** : {user['nom_entreprise']}")
+        st.write(f"**NEQ** : {user.get('numero_neq', 'N/A')}")
+        st.write(f"**Licence RBQ** : {user.get('licence_rbq', 'N/A')}")
+        st.write(f"**Spécialités** : {', '.join(user.get('specialites', []))}")
+        st.write(f"**Adresse** : {user.get('adresse')}, {user.get('ville')}, {user.get('province')} {user.get('code_postal')}")
+        
+        st.subheader("Contact")
+        st.write(f"**Nom** : {user['contact_nom']}")
+        st.write(f"**Téléphone** : {user.get('contact_telephone', 'N/A')}")
+        st.write(f"**Email** : {user['contact_email']}")
+        
+        if user.get('logo_url'):
+            st.image(user['logo_url'], width=200)
+        
+        if st.button("✏️ Modifier le profil"):
+            st.session_state.profile_completed = False
+            st.rerun()
