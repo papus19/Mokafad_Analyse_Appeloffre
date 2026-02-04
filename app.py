@@ -182,16 +182,25 @@ if 'profile_completed' not in st.session_state:
 # --- FONCTIONS BASE DE DONNÉES ---
 def signup_user(data):
     try:
+        # 1. Inscription
         user_auth = supabase.auth.sign_up({
             "email": data["contact_email"], 
             "password": data["password"]
         })
+        
         import time
-        time.sleep(2)
+        time.sleep(2)  # Attendre la confirmation (optionnel, mais parfois utile)
+
+        # 2. Connexion pour obtenir le token
         session = supabase.auth.sign_in_with_password({
             "email": data["contact_email"], 
             "password": data["password"]
         })
+
+        # 🔑 3. CRUCIAL : Mettre à jour le client avec le token d'accès
+        supabase.postgrest.auth(session.session.access_token)
+
+        # 4. Maintenant, l'insertion aura accès à auth.uid()
         entreprise_data = {
             "nom_entreprise": data["nom_entreprise"],
             "numero_neq": data["numero_neq"],
@@ -205,13 +214,25 @@ def signup_user(data):
             "contact_nom": data["contact_nom"],
             "contact_telephone": data["contact_telephone"],
             "contact_email": data["contact_email"],
-            "user_id": session.user.id
+            # ⚠️ NE PAS METTRE "user_id" manuellement !
+            # La politique RLS utilise auth.uid(), donc laisse la DB le gérer
+            # OU alors, mets-le à session.user.id (mais ce n'est pas nécessaire)
         }
+
+        # Option A (recommandée) : Ne pas envoyer user_id, et laisser une colonne DEFAULT auth.uid()
+        # Mais si tu dois l'envoyer :
+        entreprise_data["user_id"] = session.user.id
+
         result = supabase.table('entreprises').insert(entreprise_data).execute()
+
+        # 5. Réinitialiser l'auth (optionnel, pour sécurité)
+        supabase.postgrest.auth(None)
+
         st.session_state.user = result.data[0]
         st.session_state.logged_in = True
         st.session_state.profile_completed = False
         return True
+
     except Exception as e:
         st.error(f"❌ Erreur inscription: {str(e)}")
         return False
