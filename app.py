@@ -213,26 +213,58 @@ def signup_user(data):
         st.session_state.profile_completed = False
         return True
     except Exception as e:
-        st.error(f"❌ Erreur: {str(e)}")
+        st.error(f"❌ Erreur inscription: {str(e)}")
         return False
 
 def login_user(email, password):
+    """Fonction de connexion avec debug amélioré"""
     try:
-        session = supabase.auth.sign_in_with_password({"email": email, "password": password})
-        result = supabase.table('entreprises').select("*").eq('contact_email', email).execute()
-        if result.data:
-            st.session_state.user = result.data[0]
-            st.session_state.logged_in = True
-            st.session_state.profile_completed = bool(st.session_state.user.get('logo_url'))
-            return True
-        return False
+        # Vérification des champs vides
+        if not email or not password:
+            st.error("❌ Email et mot de passe requis")
+            return False
+        
+        # Tentative de connexion
+        session = supabase.auth.sign_in_with_password({
+            "email": email.strip(), 
+            "password": password
+        })
+        
+        # Vérification si la session existe
+        if not session or not session.user:
+            st.error("❌ Connexion échouée - session invalide")
+            return False
+        
+        # Récupération des données entreprise
+        result = supabase.table('entreprises').select("*").eq('contact_email', email.strip()).execute()
+        
+        if not result.data or len(result.data) == 0:
+            st.error("❌ Aucune entreprise trouvée pour cet email")
+            return False
+        
+        # Succès
+        st.session_state.user = result.data[0]
+        st.session_state.logged_in = True
+        st.session_state.profile_completed = bool(st.session_state.user.get('logo_url'))
+        return True
+        
     except Exception as e:
-        st.error(f"❌ Erreur: {str(e)}")
+        error_msg = str(e)
+        if "Invalid login credentials" in error_msg:
+            st.error("❌ Email ou mot de passe incorrect")
+        elif "Email not confirmed" in error_msg:
+            st.error("❌ Veuillez confirmer votre email avant de vous connecter")
+        else:
+            st.error(f"❌ Erreur connexion: {error_msg}")
         return False
 
 def get_user_by_email(email):
-    result = supabase.table('entreprises').select("*").eq('contact_email', email).execute()
-    return result.data[0] if result.data else None
+    try:
+        result = supabase.table('entreprises').select("*").eq('contact_email', email).execute()
+        return result.data[0] if result.data else None
+    except Exception as e:
+        st.error(f"Erreur recherche email: {str(e)}")
+        return None
 
 def update_entreprise_logo(entreprise_id, logo_url):
     supabase.table('entreprises').update({"logo_url": logo_url}).eq('id', entreprise_id).execute()
@@ -288,14 +320,20 @@ st.title("⚡ MOKAFAD - Solution Soumission IA")
 # --- AUTHENTIFICATION ---
 if not st.session_state.logged_in:
     tab1, tab2 = st.tabs(["🔐 Connexion", "📝 Inscription"])
+    
     with tab1:
-        with st.form("login_form"):
-            email = st.text_input("📧 Email")
-            password = st.text_input("🔒 Mot de passe", type="password")
-            if st.form_submit_button("➡️ Se connecter", use_container_width=False):
-                if login_user(email, password):
-                    st.success("✅ Connecté !")
-                    st.rerun()
+        st.subheader("Connexion")
+        with st.form("login_form", clear_on_submit=False):
+            email = st.text_input("📧 Email", key="login_email")
+            password = st.text_input("🔒 Mot de passe", type="password", key="login_password")
+            submitted = st.form_submit_button("➡️ Se connecter", use_container_width=False)
+            
+            if submitted:
+                with st.spinner("Connexion en cours..."):
+                    if login_user(email, password):
+                        st.success("✅ Connecté !")
+                        st.rerun()
+    
     with tab2:
         signup_data = forms.signup_form()
         if signup_data:
