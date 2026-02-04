@@ -63,7 +63,7 @@ if missing:
     st.error(f"❌ Variables manquantes dans .env : {', '.join(missing)}")
     st.stop()
 
-# --- CLIENTS ---
+# --- CLIENT SUPABASE ---
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"), 
     os.getenv("SUPABASE_ANON_KEY")
@@ -113,7 +113,6 @@ class LLMManager:
         Analyse avec fallback automatique Groq → Gemini
         Retourne: {"success": bool, "result": str, "provider": str, "error": str}
         """
-        
         for provider in self.providers:
             try:
                 if provider["type"] == "groq":
@@ -152,11 +151,8 @@ class LLMManager:
                     }
             
             except Exception as e:
-                error_msg = str(e)
-                # Continue silencieusement au prochain provider
                 continue
         
-        # Si tous ont échoué
         return {
             "success": False,
             "result": None,
@@ -164,43 +160,52 @@ class LLMManager:
             "error": "Tous les LLMs sont indisponibles. Réessayez plus tard."
         }
 
-# Initialiser le gestionnaire
 llm_manager = LLMManager()
 
 # ============================================
-# FIN SYSTÈME DE FALLBACK
+# SESSION & FONCTIONS UTILITAIRES
 # ============================================
 
-# Session
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 if 'user' not in st.session_state:
     st.session_state.user = None
 if 'profile_completed' not in st.session_state:
     st.session_state.profile_completed = False
+if 'access_token' not in st.session_state:
+    st.session_state.access_token = None
+
+def apply_supabase_auth():
+    """Applique le token stocké dans la session au client Supabase"""
+    token = st.session_state.get('access_token')
+    supabase.postgrest.auth(token)
+
+def clear_supabase_auth():
+    """Supprime l'authentification du client"""
+    supabase.postgrest.auth(None)
 
 # --- FONCTIONS BASE DE DONNÉES ---
 def signup_user(data):
     try:
-        # 1. Inscription
-        user_auth = supabase.auth.sign_up({
+        # Inscription
+        supabase.auth.sign_up({
             "email": data["contact_email"], 
             "password": data["password"]
         })
-        
         import time
-        time.sleep(2)  # Attendre la confirmation (optionnel, mais parfois utile)
+        time.sleep(2)
 
-        # 2. Connexion pour obtenir le token
+        # Connexion pour obtenir un token
         session = supabase.auth.sign_in_with_password({
             "email": data["contact_email"], 
             "password": data["password"]
         })
 
-        # 🔑 3. CRUCIAL : Mettre à jour le client avec le token d'accès
-        supabase.postgrest.auth(session.session.access_token)
+        # 🔑 Appliquer le token au client
+        st.session_state.access_token = session.session.access_token
+        apply_supabase_auth()
 
-        # 4. Maintenant, l'insertion aura accès à auth.uid()
+        # Données entreprise
         entreprise_data = {
             "nom_entreprise": data["nom_entreprise"],
             "numero_neq": data["numero_neq"],
@@ -214,20 +219,10 @@ def signup_user(data):
             "contact_nom": data["contact_nom"],
             "contact_telephone": data["contact_telephone"],
             "contact_email": data["contact_email"],
-            # ⚠️ NE PAS METTRE "user_id" manuellement !
-            # La politique RLS utilise auth.uid(), donc laisse la DB le gérer
-            # OU alors, mets-le à session.user.id (mais ce n'est pas nécessaire)
+            "user_id": session.user.id  # nécessaire si pas de DEFAULT auth.uid()
         }
 
-        # Option A (recommandée) : Ne pas envoyer user_id, et laisser une colonne DEFAULT auth.uid()
-        # Mais si tu dois l'envoyer :
-        entreprise_data["user_id"] = session.user.id
-
         result = supabase.table('entreprises').insert(entreprise_data).execute()
-
-        # 5. Réinitialiser l'auth (optionnel, pour sécurité)
-        supabase.postgrest.auth(None)
-
         st.session_state.user = result.data[0]
         st.session_state.logged_in = True
         st.session_state.profile_completed = False
@@ -235,14 +230,15 @@ def signup_user(data):
 
     except Exception as e:
         st.error(f"❌ Erreur inscription: {str(e)}")
+        clear_supabase_auth()
         return False
 
 def login_user(email, password):
     try:
         session = supabase.auth.sign_in_with_password({"email": email, "password": password})
-        # Appliquer le token pour les futures requêtes
-        supabase.postgrest.auth(session.session.access_token)
-        
+        st.session_state.access_token = session.session.access_token
+        apply_supabase_auth()
+
         result = supabase.table('entreprises').select("*").eq('contact_email', email).execute()
         if result.data:
             st.session_state.user = result.data[0]
@@ -251,38 +247,22 @@ def login_user(email, password):
             return True
         return False
     except Exception as e:
-        st.error(f"❌ Erreur: {str(e)}")
-        return False
-        
-        # Succès
-        st.session_state.user = result.data[0]
-        st.session_state.logged_in = True
-        st.session_state.profile_completed = bool(st.session_state.user.get('logo_url'))
-        return True
-        
-    except Exception as e:
-        error_msg = str(e)
-        if "Invalid login credentials" in error_msg:
-            st.error("❌ Email ou mot de passe incorrect")
-        elif "Email not confirmed" in error_msg:
-            st.error("❌ Veuillez confirmer votre email avant de vous connecter")
-        else:
-            st.error(f"❌ Erreur connexion: {error_msg}")
+        st.error(f"❌ Erreur connexion: {str(e)}")
+        clear_supabase_auth()
         return False
 
 def get_user_by_email(email):
-    try:
-        result = supabase.table('entreprises').select("*").eq('contact_email', email).execute()
-        return result.data[0] if result.data else None
-    except Exception as e:
-        st.error(f"Erreur recherche email: {str(e)}")
-        return None
+    apply_supabase_auth()  # au cas où
+    result = supabase.table('entreprises').select("*").eq('contact_email', email).execute()
+    return result.data[0] if result.data else None
 
 def update_entreprise_logo(entreprise_id, logo_url):
+    apply_supabase_auth()
     supabase.table('entreprises').update({"logo_url": logo_url}).eq('id', entreprise_id).execute()
 
 def add_projet_antecedent(projet_data):
     try:
+        apply_supabase_auth()
         data = {
             "entreprise_id": st.session_state.user['id'],
             "nom_projet": projet_data["nom_projet"],
@@ -302,6 +282,7 @@ def add_projet_antecedent(projet_data):
 
 def save_soumission(entreprise_id, soumission_data):
     try:
+        apply_supabase_auth()
         data_to_save = {
             "entreprise_id": entreprise_id,
             "numero_projet": soumission_data.get("numero_projet"),
@@ -311,7 +292,6 @@ def save_soumission(entreprise_id, soumission_data):
             "score": soumission_data.get("score"),
             "statut": soumission_data.get("statut")
         }
-        
         if soumission_data.get("document"):
             try:
                 doc_url = storage.upload_soumission(supabase, soumission_data["document"])
@@ -319,33 +299,30 @@ def save_soumission(entreprise_id, soumission_data):
                     data_to_save["document_url"] = doc_url
             except Exception:
                 pass
-        
         result = supabase.table('soumissions').insert(data_to_save).execute()
         return result.data[0] if result.data else None
     except Exception as e:
         st.error(f"Erreur sauvegarde soumission: {str(e)}")
         return None
 
-# --- APPLICATION ---
+# --- APPLICATION PRINCIPALE ---
 st.title("⚡ MOKAFAD - Solution Soumission IA")
+
+# Restaurer l'auth si reload
+if st.session_state.logged_in and st.session_state.access_token:
+    apply_supabase_auth()
 
 # --- AUTHENTIFICATION ---
 if not st.session_state.logged_in:
     tab1, tab2 = st.tabs(["🔐 Connexion", "📝 Inscription"])
-    
     with tab1:
-        st.subheader("Connexion")
-        with st.form("login_form", clear_on_submit=False):
-            email = st.text_input("📧 Email", key="login_email")
-            password = st.text_input("🔒 Mot de passe", type="password", key="login_password")
-            submitted = st.form_submit_button("➡️ Se connecter", use_container_width=False)
-            
-            if submitted:
-                with st.spinner("Connexion en cours..."):
-                    if login_user(email, password):
-                        st.success("✅ Connecté !")
-                        st.rerun()
-    
+        with st.form("login_form"):
+            email = st.text_input("📧 Email")
+            password = st.text_input("🔒 Mot de passe", type="password")
+            if st.form_submit_button("➡️ Se connecter", use_container_width=False):
+                if login_user(email, password):
+                    st.success("✅ Connecté !")
+                    st.rerun()
     with tab2:
         signup_data = forms.signup_form()
         if signup_data:
@@ -360,6 +337,7 @@ elif not st.session_state.profile_completed:
     st.warning("⚠️ Veuillez compléter votre profil pour continuer")
     profile_data = forms.profile_completion_form(st.session_state.user)
     if profile_data:
+        apply_supabase_auth()
         if profile_data["logo_file"]:
             try:
                 logo_url = storage.upload_logo(supabase, profile_data["logo_file"])
@@ -386,6 +364,7 @@ else:
         st.write(f"📍 {user['ville']}, {user['province']}")
         if st.button("🚪 Déconnexion", use_container_width=False):
             supabase.auth.sign_out()
+            clear_supabase_auth()
             st.session_state.clear()
             st.rerun()
     
@@ -393,6 +372,7 @@ else:
     
     with tab1:
         st.header("📊 Tableau de bord")
+        apply_supabase_auth()
         col1, col2, col3 = st.columns(3)
         with col1:
             projets = supabase.table('projets_antecedents').select("id", count="exact").eq('entreprise_id', user['id']).execute()
@@ -412,7 +392,6 @@ else:
                     st.write(f"**Statut:** {item['statut']}")
                     st.write(f"**Recommandation:** {item.get('recommendation', 'N/A')}")
                     st.write(f"**Score:** {item.get('score', 'N/A')}")
-                    # Afficher le LLM utilisé si disponible
                     if item.get('analyse_json') and isinstance(item['analyse_json'], dict):
                         llm_used = item['analyse_json'].get('llm_used', 'N/A')
                         st.write(f"**Modèle IA:** {llm_used}")
@@ -454,7 +433,6 @@ else:
                     {text}
                     """
                     
-                    # 🆕 UTILISATION DU SYSTÈME DE FALLBACK
                     analysis_result = llm_manager.analyze(prompt, max_tokens=2000)
                     
                     if not analysis_result["success"]:
@@ -468,7 +446,6 @@ else:
                     st.markdown("---")
                     st.markdown(result)
                     
-                    # Extraction de la recommandation
                     rec = "INCONNU"
                     if "GO" in result.upper() and "NO-GO" not in result.upper() and "NO GO" not in result.upper():
                         rec = "GO"
@@ -477,7 +454,6 @@ else:
                     elif "PEUT-ÊTRE" in result.upper() or "MAYBE" in result.upper():
                         rec = "PEUT-ÊTRE"
                     
-                    # Sauvegarde
                     soumission_data = {
                         "numero_projet": numero_projet,
                         "nom_projet": nom_projet,
@@ -521,6 +497,7 @@ else:
                         "document": doc_p
                     })
                     st.rerun()
+        apply_supabase_auth()
         projets = supabase.table('projets_antecedents').select("*").eq('entreprise_id', user['id']).order('created_at', desc=True).execute()
         if not projets.data:
             st.info("📭 Aucun projet pour le moment")
