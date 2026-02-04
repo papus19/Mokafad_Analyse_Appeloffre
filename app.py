@@ -182,7 +182,7 @@ def apply_supabase_auth():
         supabase.postgrest.auth(None)
 
 def clear_supabase_auth():
-    supabase.postgrest.auth(None)
+    pass  # inutile, supprimé pour sécurité
 
 # --- FONCTIONS BASE DE DONNÉES ---
 def signup_user(data):
@@ -361,10 +361,13 @@ else:
         st.write(f"🏢 **{user['nom_entreprise']}**")
         st.write(f"📍 {user['ville']}, {user['province']}")
         if st.button("🚪 Déconnexion", use_container_width=False):
-            supabase.auth.sign_out()
-            clear_supabase_auth()
-            st.session_state.clear()
-            st.rerun()
+    try:
+        supabase.auth.sign_out()
+    except Exception as e:
+        st.warning(f"⚠️ Déconnexion partielle : {str(e)[:80]}")
+    # Pas de clear_supabase_auth() — inutile et dangereux
+    st.session_state.clear()
+    st.rerun()
     
     # Charger les projets antérieurs une fois
     apply_supabase_auth()
