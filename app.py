@@ -99,17 +99,7 @@ class LLMManager:
             except Exception as e:
                 st.warning(f"⚠️ Gemini indisponible: {str(e)[:100]}")
         
-        # 2️⃣ CLAUDE (priorité 2)
-        if os.getenv("ANTHROPIC_API_KEY"):
-            try:
-                client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-                self.providers.append({
-                    "name": "Claude Haiku",
-                    "client": client,
-                    "type": "claude"
-                })
-            except Exception as e:
-                st.warning(f"⚠️ Claude indisponible: {str(e)[:100]}")
+       
         
         # 3️⃣ GROQ (priorité 3 - gratuit et rapide)
         if os.getenv("GROQ_API_KEY"):
@@ -119,13 +109,7 @@ class LLMManager:
                 "type": "groq"
             })
         
-        # 4️⃣ TOGETHER AI (priorité 4)
-        if os.getenv("TOGETHER_API_KEY"):
-            self.providers.append({
-                "name": "Together AI",
-                "api_key": os.getenv("TOGETHER_API_KEY"),
-                "type": "together"
-            })
+        
         
         if not self.providers:
             st.error("❌ Aucun LLM configuré ! Ajoutez au moins une clé API dans .env")
