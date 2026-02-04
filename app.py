@@ -380,13 +380,23 @@ def update_entreprise_profile(entreprise_id, data):
 
 def add_projet_antecedent(projet_data):
     try:
+        # ✅ Vérifiez que l'utilisateur est bien connecté
+        if not st.session_state.user:
+            raise Exception("❌ Utilisateur non authentifié")
+        
+        # ✅ Vérifiez que l'ID de l'entreprise existe
+        entreprise_id = st.session_state.user.get('id')
+        if not entreprise_id:
+            raise Exception("❌ ID de l'entreprise manquant")
+        
         data = {
-            "entreprise_id": st.session_state.user['id'],
+            "entreprise_id": entreprise_id,
             "nom_projet": projet_data["nom_projet"],
             "montant": projet_data["montant"],
             "duree_jours": projet_data["duree_jours"],
             "specifications": projet_data["specifications"]
         }
+       
         if projet_data.get("document"):
             doc_url = storage.upload_document_projet(supabase, projet_data["document"])
             if doc_url:
@@ -453,18 +463,14 @@ elif not st.session_state.profile_completed:
 # --- APPLICATION PRINCIPALE ---
 else:
     user = st.session_state.user
-    with st.sidebar:
-        if user.get('logo_url'):
-            st.image(user['logo_url'], width=120)
-        else:
-            initiales = "".join([part[0].upper() for part in user['nom_entreprise'].split()[:2]])
-            st.markdown(f'<div class="profile-logo">{initiales}</div>', unsafe_allow_html=True)
-        
-        st.write(f"👤 **{user['contact_nom']}**")
-        st.write(f"🏢 **{user['nom_entreprise']}**")
-        st.write(f"📍 {user['ville']}, {user['province']}")
-        
-        st.markdown("---")
+  with st.sidebar:
+    if user.get('logo_url'):
+        st.image(user['logo_url'], width=120)
+    else:
+        # ✅ CORRECTION : Utilisez .get() avec valeur par défaut
+        nom_entreprise = user.get('nom_entreprise', 'Entreprise')
+        initiales = "".join([part[0].upper() for part in nom_entreprise.split()[:2]])
+        st.markdown(f'<div class="profile-logo">{initiales}</div>', unsafe_allow_html=True)
         projets = supabase.table('projets_antecedents').select("id", count="exact").eq('entreprise_id', user['id']).execute()
         soumissions = supabase.table('soumissions').select("id", count="exact").eq('entreprise_id', user['id']).execute()
         qualifies = supabase.table('soumissions').select("id", count="exact").eq('entreprise_id', user['id']).eq('statut', 'qualifie').execute()
@@ -526,11 +532,13 @@ else:
         
         col_logo1, col_logo2 = st.columns([1, 3])
         with col_logo1:
-            if user.get('logo_url'):
-                st.image(user['logo_url'], width=150)
-            else:
-                initiales = "".join([part[0].upper() for part in user['nom_entreprise'].split()[:2]])
-                st.markdown(f'<div class="profile-logo" style="width:150px;height:150px;font-size:3rem;">{initiales}</div>', unsafe_allow_html=True)
+    if user.get('logo_url'):
+        st.image(user['logo_url'], width=150)
+    else:
+        # ✅ CORRECTION : Utilisez .get() avec valeur par défaut
+        nom_entreprise = user.get('nom_entreprise', 'Entreprise')
+        initiales = "".join([part[0].upper() for part in nom_entreprise.split()[:2]])
+        st.markdown(f'<div class="profile-logo" style="width:150px;height:150px;font-size:3rem;">{initiales}</div>', unsafe_allow_html=True)
         
         with col_logo2:
             st.write("**Modifier le logo**")
