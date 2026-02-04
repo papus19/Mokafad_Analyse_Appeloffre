@@ -9,31 +9,6 @@ from groq import Groq
 import google.generativeai as genai
 from openai import OpenAI
 
-# --- VÉRIFICATION DE LA SESSION AU DÉMARRAGE ---
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
-    st.info("ℹ️ Session initialisée")
-    
-if 'user' not in st.session_state:
-    st.session_state.user = None
-    
-if 'profile_completed' not in st.session_state:
-    st.session_state.profile_completed = False
-
-# ✅ Vérification de l'authentification existante
-try:
-    current_session = supabase.auth.get_session()
-    if current_session and not st.session_state.logged_in:
-        st.info("🔄 Session existante détectée, récupération des données...")
-        result = supabase.table('entreprises').select("*").eq('contact_email', current_session.user.email).execute()
-        if result.data:
-            st.session_state.user = result.data[0]
-            st.session_state.logged_in = True
-            st.session_state.profile_completed = bool(st.session_state.user.get('logo_url'))
-            st.success("✅ Session restaurée automatiquement")
-except:
-    pass  # Pas de session existante
-
 # --- CONFIGURATION ---
 load_dotenv()
 st.set_page_config(page_title="⚡ MOKAFAD - Solution Soumission IA", page_icon="⚡", layout="wide")
@@ -123,7 +98,7 @@ if missing:
     st.error(f"❌ Variables manquantes dans .env : {', '.join(missing)}")
     st.code("""
 📁 Fichier .env requis :
-SUPABASE_URL=https://votre-projet.supabase.co    
+SUPABASE_URL=https://votre-projet.supabase.co      
 SUPABASE_ANON_KEY=eyJxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 # Au moins une clé API IA (Gemini en priorité):
@@ -139,6 +114,30 @@ supabase: Client = create_client(
     os.getenv("SUPABASE_ANON_KEY")
 )
 
+# --- VÉRIFICATION DE LA SESSION AU DÉMARRAGE (APRÈS INITIALISATION SUPABASE) ---
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+    
+if 'user' not in st.session_state:
+    st.session_state.user = None
+    
+if 'profile_completed' not in st.session_state:
+    st.session_state.profile_completed = False
+
+# ✅ Vérification de l'authentification existante
+try:
+    current_session = supabase.auth.get_session()
+    if current_session and not st.session_state.logged_in:
+        st.info("🔄 Session existante détectée, récupération des données...")
+        result = supabase.table('entreprises').select("*").eq('contact_email', current_session.user.email).execute()
+        if result.data:
+            st.session_state.user = result.data[0]
+            st.session_state.logged_in = True
+            st.session_state.profile_completed = bool(st.session_state.user.get('logo_url'))
+            st.success("✅ Session restaurée automatiquement")
+except:
+    pass  # Pas de session existante
+
 # --- CONFIGURATION MULTI-LLM AVEC GEMINI EN PRIORITÉ ABSOLUE ---
 class MultiLLMClient:
     """Client qui gère plusieurs LLMs avec fallback automatique - Gemini en priorité absolue"""
@@ -146,14 +145,13 @@ class MultiLLMClient:
     def __init__(self):
         self.providers = []
         
-        # ✅ PRIORITÉ 1 : Gemini 2.5 Flash (modèle OFFICIEL)
+        # ✅ PRIORITÉ 1 : Gemini 1.5 Flash (modèle OFFICIEL - CORRECTION)
         if os.getenv("GEMINI_API_KEY"):
             try:
                 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-                # CORRECTION : Utilisation du modèle officiel 'gemini-2.5-flash'
-                self.gemini_model = genai.GenerativeModel('gemini-2.5-flash')
+                # CORRECTION : 'gemini-2.5-flash' n'existe pas → utiliser 'gemini-1.5-flash'
+                self.gemini_model = genai.GenerativeModel('gemini-1.5-flash')
                 self.providers.append("gemini")
-                #st.info("✅ Gemini 1.5 Flash configuré (priorité 1)")
             except Exception as e:
                 st.warning(f"⚠️ Gemini non configuré: {str(e)}")
         
@@ -162,7 +160,6 @@ class MultiLLMClient:
             try:
                 self.groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
                 self.providers.append("groq")
-                #st.info("✅ Groq (LLaMA 3.3) configuré (priorité 2)")
             except:
                 pass
         
@@ -171,7 +168,6 @@ class MultiLLMClient:
             try:
                 self.openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
                 self.providers.append("openai")
-               # st.info("✅ OpenAI GPT-3.5 configuré (priorité 3)")
             except:
                 pass
         
@@ -181,12 +177,8 @@ class MultiLLMClient:
     
     def analyze(self, prompt: str, max_tokens: int = 4500) -> tuple:
         """Essaie chaque provider dans l'ordre de priorité"""
-        # ✅ CORRECTION : Priorité absolue à Gemini (premier dans la liste)
         for provider in self.providers:
             try:
-                # ✅ LOG POUR VÉRIFICATION
-                st.info(f"🤖 Utilisation de: {provider}")
-                
                 if provider == "gemini":
                     response = self.gemini_model.generate_content(
                         prompt,
@@ -217,8 +209,6 @@ class MultiLLMClient:
                     return response.choices[0].message.content, "OpenAI GPT-3.5"
                 
             except Exception as e:
-                # ✅ LOG D'ERREUR POUR DÉBOGAGE
-                st.warning(f"⚠️ {provider} a échoué: {str(e)}")
                 continue
         
         raise Exception("Tous les services IA sont temporairement indisponibles. Réessayez plus tard.")
@@ -238,7 +228,6 @@ def analyze_document(prompt: str, user: dict, entreprise_id: str) -> tuple:
         if projets_anterieurs.data:
             for i, projet in enumerate(projets_anterieurs.data):
                 projets_text += f"Projet #{i+1}: {projet['nom_projet']} (Montant: ${projet['montant']:.2f}, Durée: {projet['duree_jours']} jours)\n"
-                # ✅ CORRECTION : Chaîne correctement fermée
                 projets_text += f"  Spécifications: {projet['specifications'][:150]}...\n"
                 if projet.get('document_url'):
                     projets_text += f"  Document: {projet['document_url']}\n"
@@ -256,20 +245,13 @@ def analyze_document(prompt: str, user: dict, entreprise_id: str) -> tuple:
         - Identifiez les similitudes et différences clés
         - Évaluez l'adéquation avec l'expérience de l'entreprise
         - Suggérez des adaptations nécessaires par rapport aux projets antérieurs
+        - ✅ **Veuillez terminer votre réponse COMPLÈTEMENT sans couper les phrases**
         """
         
         result, model_used = llm_client.analyze(prompt_with_history, max_tokens=4500)
         return result, model_used
     except Exception as e:
         raise Exception(f"Erreur analyse IA : {str(e)}")
-
-# Session
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
-if 'user' not in st.session_state:
-    st.session_state.user = None
-if 'profile_completed' not in st.session_state:
-    st.session_state.profile_completed = False
 
 # --- FONCTIONS BASE DE DONNÉES ---
 def signup_user(data):
@@ -300,6 +282,9 @@ def signup_user(data):
             "user_id": session.user.id
         }
         result = supabase.table('entreprises').insert(entreprise_data).execute()
+        if not result.data:
+            raise Exception("❌ Échec de création de l'entreprise")
+        
         st.session_state.user = result.data[0]
         st.session_state.logged_in = True
         st.session_state.profile_completed = False
@@ -308,24 +293,6 @@ def signup_user(data):
         st.error(f"❌ Erreur: {str(e)}")
         return False
 
-def signup_user(data):
-    try:
-        # ... [code existant]
-        
-        # ✅ Vérifiez que l'insertion a réussi
-        result = supabase.table('entreprises').insert(entreprise_data).execute()
-        if not result.data:
-            raise Exception("❌ Échec de création de l'entreprise")
-        
-        st.session_state.user = result.data[0]
-        st.session_state.logged_in = True
-        st.session_state.profile_completed = False
-        return True
-        
-    except Exception as e:
-        st.error(f"❌ Erreur: {str(e)}")
-        return False
-        
 def login_user(email, password):
     try:
         session = supabase.auth.sign_in_with_password({"email": email, "password": password})
@@ -425,23 +392,25 @@ def save_soumission(entreprise_id, data):
 st.title("⚡ MOKAFAD - Solution Soumission IA")
 
 # --- AUTHENTIFICATION ---
-# --- AUTHENTIFICATION ---
 if not st.session_state.logged_in:
     tab1, tab2 = st.tabs(["🔐 Connexion", "📝 Inscription"])
     with tab1:
         with st.form("login_form"):
             email = st.text_input("📧 Email")
             password = st.text_input("🔒 Mot de passe", type="password")
-            
-            # ✅ Ajoutez un bouton de test
             if st.form_submit_button("➡️ Se connecter", use_container_width=False):
                 st.info("🔄 Tentative de connexion en cours...")
-                
                 if login_user(email, password):
                     st.success("✅ Connecté !")
-                else:
-                    st.error("❌ Échec de la connexion")
-  
+                    st.rerun()
+    with tab2:
+        signup_data = forms.signup_form()
+        if signup_data:
+            if get_user_by_email(signup_data["contact_email"]):
+                st.error("❌ Cet email est déjà utilisé")
+            elif signup_user(signup_data):
+                st.success("✅ Compte créé ! Veuillez compléter votre profil.")
+                st.rerun()
 
 # --- PROFIL À COMPLÉTER ---
 elif not st.session_state.profile_completed:
@@ -463,14 +432,20 @@ elif not st.session_state.profile_completed:
 # --- APPLICATION PRINCIPALE ---
 else:
     user = st.session_state.user
-  with st.sidebar:
-    if user.get('logo_url'):
-        st.image(user['logo_url'], width=120)
-    else:
-        # ✅ CORRECTION : Utilisez .get() avec valeur par défaut
-        nom_entreprise = user.get('nom_entreprise', 'Entreprise')
-        initiales = "".join([part[0].upper() for part in nom_entreprise.split()[:2]])
-        st.markdown(f'<div class="profile-logo">{initiales}</div>', unsafe_allow_html=True)
+    with st.sidebar:
+        if user.get('logo_url'):
+            st.image(user['logo_url'], width=120)
+        else:
+            # ✅ CORRECTION : Utilisez .get() avec valeur par défaut
+            nom_entreprise = user.get('nom_entreprise', 'Entreprise')
+            initiales = "".join([part[0].upper() for part in nom_entreprise.split()[:2]])
+            st.markdown(f'<div class="profile-logo">{initiales}</div>', unsafe_allow_html=True)
+        
+        st.write(f"👤 **{user.get('contact_nom', 'N/A')}**")
+        st.write(f"🏢 **{user.get('nom_entreprise', 'N/A')}**")
+        st.write(f"📍 {user.get('ville', 'N/A')}, {user.get('province', 'N/A')}")
+        
+        st.markdown("---")
         projets = supabase.table('projets_antecedents').select("id", count="exact").eq('entreprise_id', user['id']).execute()
         soumissions = supabase.table('soumissions').select("id", count="exact").eq('entreprise_id', user['id']).execute()
         qualifies = supabase.table('soumissions').select("id", count="exact").eq('entreprise_id', user['id']).eq('statut', 'qualifie').execute()
@@ -532,13 +507,13 @@ else:
         
         col_logo1, col_logo2 = st.columns([1, 3])
         with col_logo1:
-    if user.get('logo_url'):
-        st.image(user['logo_url'], width=150)
-    else:
-        # ✅ CORRECTION : Utilisez .get() avec valeur par défaut
-        nom_entreprise = user.get('nom_entreprise', 'Entreprise')
-        initiales = "".join([part[0].upper() for part in nom_entreprise.split()[:2]])
-        st.markdown(f'<div class="profile-logo" style="width:150px;height:150px;font-size:3rem;">{initiales}</div>', unsafe_allow_html=True)
+            if user.get('logo_url'):
+                st.image(user['logo_url'], width=150)
+            else:
+                # ✅ CORRECTION : Utilisez .get() avec valeur par défaut
+                nom_entreprise = user.get('nom_entreprise', 'Entreprise')
+                initiales = "".join([part[0].upper() for part in nom_entreprise.split()[:2]])
+                st.markdown(f'<div class="profile-logo" style="width:150px;height:150px;font-size:3rem;">{initiales}</div>', unsafe_allow_html=True)
         
         with col_logo2:
             st.write("**Modifier le logo**")
@@ -650,11 +625,11 @@ else:
                     reader = PdfReader(uploaded_file)
                     text = " ".join([page.extract_text() or "" for page in reader.pages])[:8000]
                     context = f"""
-                    Entreprise: {user['nom_entreprise']}
+                    Entreprise: {user.get('nom_entreprise', 'N/A')}
                     Spécialités: {', '.join(user.get('specialites', []))}
                     NEQ: {user.get('numero_neq', 'N/A')}
                     Licence RBQ: {user.get('licence_rbq', 'N/A')}
-                    Adresse: {user.get('adresse', '')}, {user.get('ville', '')}, {user.get('province', '')}
+                    Adresse: {user.get('adresse', 'N/A')}, {user.get('ville', 'N/A')}, {user.get('province', 'N/A')}
                     """
                     prompt = f"""
                     {context}
@@ -664,15 +639,9 @@ else:
                     - Basez-vous UNIQUEMENT sur les informations présentes dans le document
                     - Citez TOUJOURS les pages ou sections spécifiques du document
                     - Si une information n'est pas dans le document, indiquez clairement "Information non trouvée dans le document"
-                    - Ne JAMAIS inventer ou halluciner des informations
-                    - Basez-vous UNIQUEMENT sur les informations présentes dans le document
-                    - Citez TOUJOURS les pages ou sections spécifiques du document
-                    - Si une information n'est pas dans le document, indiquez clairement "Information non trouvée dans le document"
                     - ✅ **Veuillez terminer votre réponse COMPLÈTEMENT sans couper les phrases**
                     - ✅ **N'arrêtez pas avant d'avoir fini la justification détaillée**
 
-Analysez cet appel d'offre et donnez:
-                    
                     Analysez cet appel d'offre et donnez:
                     
                     1. RECOMMANDATION: GO / NO-GO / PEUT-ÊTRE
