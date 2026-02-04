@@ -9,6 +9,31 @@ from groq import Groq
 import google.generativeai as genai
 from openai import OpenAI
 
+# --- VÉRIFICATION DE LA SESSION AU DÉMARRAGE ---
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+    st.info("ℹ️ Session initialisée")
+    
+if 'user' not in st.session_state:
+    st.session_state.user = None
+    
+if 'profile_completed' not in st.session_state:
+    st.session_state.profile_completed = False
+
+# ✅ Vérification de l'authentification existante
+try:
+    current_session = supabase.auth.get_session()
+    if current_session and not st.session_state.logged_in:
+        st.info("🔄 Session existante détectée, récupération des données...")
+        result = supabase.table('entreprises').select("*").eq('contact_email', current_session.user.email).execute()
+        if result.data:
+            st.session_state.user = result.data[0]
+            st.session_state.logged_in = True
+            st.session_state.profile_completed = bool(st.session_state.user.get('logo_url'))
+            st.success("✅ Session restaurée automatiquement")
+except:
+    pass  # Pas de session existante
+
 # --- CONFIGURATION ---
 load_dotenv()
 st.set_page_config(page_title="⚡ MOKAFAD - Solution Soumission IA", page_icon="⚡", layout="wide")
@@ -285,16 +310,32 @@ def signup_user(data):
 
 def login_user(email, password):
     try:
+        st.info(f"🔍 Tentative de connexion pour : {email}")
+        
+        # ✅ Authentification Supabase
         session = supabase.auth.sign_in_with_password({"email": email, "password": password})
+        
+        st.success(f"✅ Authentification réussie - User ID: {session.user.id}")
+        
+        # ✅ Récupération des données entreprise
         result = supabase.table('entreprises').select("*").eq('contact_email', email).execute()
+        
+        st.info(f"📊 Données trouvées : {len(result.data) if result.data else 0} entreprise(s)")
+        
         if result.data:
             st.session_state.user = result.data[0]
             st.session_state.logged_in = True
             st.session_state.profile_completed = bool(st.session_state.user.get('logo_url'))
+            
+            st.success("✅ Connexion réussie ! Redirection...")
+            st.rerun()  # ✅ Redirection immédiate
             return True
-        return False
+        else:
+            st.error("❌ Aucune entreprise trouvée pour cet email")
+            return False
+            
     except Exception as e:
-        st.error(f"❌ Erreur: {str(e)}")
+        st.error(f"❌ Erreur de connexion : {str(e)}")
         return False
 
 def get_user_by_email(email):
@@ -352,24 +393,22 @@ def save_soumission(entreprise_id, data):
 st.title("⚡ MOKAFAD - Solution Soumission IA")
 
 # --- AUTHENTIFICATION ---
+# --- AUTHENTIFICATION ---
 if not st.session_state.logged_in:
     tab1, tab2 = st.tabs(["🔐 Connexion", "📝 Inscription"])
     with tab1:
         with st.form("login_form"):
             email = st.text_input("📧 Email")
             password = st.text_input("🔒 Mot de passe", type="password")
+            
+            # ✅ Ajoutez un bouton de test
             if st.form_submit_button("➡️ Se connecter", use_container_width=False):
+                st.info("🔄 Tentative de connexion en cours...")
+                
                 if login_user(email, password):
                     st.success("✅ Connecté !")
-                    st.rerun()
-    with tab2:
-        signup_data = forms.signup_form()
-        if signup_data:
-            if get_user_by_email(signup_data["contact_email"]):
-                st.error("❌ Cet email est déjà utilisé")
-            elif signup_user(signup_data):
-                st.success("✅ Compte créé ! Veuillez compléter votre profil.")
-                st.rerun()
+                else:
+                    st.error("❌ Échec de la connexion")
   
 
 # --- PROFIL À COMPLÉTER ---
