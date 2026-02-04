@@ -6,7 +6,7 @@ from supabase import create_client, Client
 from pypdf import PdfReader
 import forms
 import storage
-import anthropic  # pip install anthropic
+# import anthropic  # pip install anthropic
 import requests  # Pour Groq/Together AI
 
 # --- CONFIGURATION ---
