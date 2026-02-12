@@ -206,8 +206,6 @@ if 'access_token' not in st.session_state:
     st.session_state.access_token = None
 if 'show_login_tab' not in st.session_state:
     st.session_state.show_login_tab = True
-if 'first_load' not in st.session_state:
-    st.session_state.first_load = True
 
 def apply_supabase_auth():
     """Applique le token d'authentification aux requêtes Supabase"""
@@ -237,16 +235,31 @@ def signup_user(data):
         if not data.get("password") or len(data.get("password", "")) < 6:
             st.error("❌ Le mot de passe doit contenir au moins 6 caractères")
             return False
+        
+        # Vérifier si l'utilisateur existe déjà AVANT de tenter l'inscription
+        existing_user = get_user_by_email(data["contact_email"])
+        if existing_user:
+            st.error("❌ Cette adresse courriel est déjà utilisée. Veuillez vous connecter.")
+            return False
             
         # Inscription
-        response = supabase.auth.sign_up({
-            "email": data["contact_email"], 
-            "password": data["password"]
-        })
+        try:
+            response = supabase.auth.sign_up({
+                "email": data["contact_email"], 
+                "password": data["password"]
+            })
+        except Exception as auth_error:
+            error_msg = str(auth_error).lower()
+            if "rate limit" in error_msg:
+                st.error("⏱️ Trop de tentatives d'inscription. Veuillez patienter 60 secondes avant de réessayer.")
+                st.info("💡 Conseil : Si vous avez déjà un compte, utilisez l'onglet Connexion.")
+                return False
+            else:
+                raise auth_error
         
         # Vérifier que l'utilisateur a été créé
         if not response.user or not response.user.id:
-            st.error("❌ Erreur lors de la création du compte. Veuillez réessayer.")
+            st.error("❌ Erreur lors de la création du compte. Veuillez réessayer dans quelques instants.")
             return False
         
         user_id = response.user.id
@@ -278,8 +291,11 @@ def signup_user(data):
 
     except Exception as e:
         error_msg = str(e).lower()
-        if "already registered" in error_msg or "already exists" in error_msg:
-            st.error("❌ Cette adresse courriel est déjà utilisée")
+        if "rate limit" in error_msg:
+            st.error("⏱️ Trop de tentatives d'inscription. Veuillez patienter 60 secondes avant de réessayer.")
+            st.info("💡 Conseil : Si vous avez déjà un compte, utilisez l'onglet Connexion.")
+        elif "already registered" in error_msg or "already exists" in error_msg:
+            st.error("❌ Cette adresse courriel est déjà utilisée. Veuillez vous connecter.")
         elif "invalid email" in error_msg:
             st.error("❌ L'adresse courriel est invalide")
         elif "password" in error_msg:
@@ -312,8 +328,11 @@ def login_user(email, password):
         if result.data and len(result.data) > 0:
             st.session_state.user = result.data[0]
             st.session_state.logged_in = True
+            # Profil complété si logo existe
             st.session_state.profile_completed = bool(st.session_state.user.get('logo'))
-            st.session_state.first_load = False  # Marquer comme non-première connexion
+            # Forcer l'affichage du tableau de bord
+            if 'active_tab' not in st.session_state:
+                st.session_state.active_tab = 0  # Tab 0 = Tableau de bord
             return True
         else:
             st.error("❌ Impossible de récupérer les informations de votre profil")
@@ -325,8 +344,8 @@ def login_user(email, password):
             st.error("📧 Votre courriel n'a pas encore été validé. Veuillez cliquer sur le lien dans le courriel de confirmation que nous vous avons envoyé. Pensez à vérifier dans vos courriels indésirables (spam).")
         elif "invalid login" in error_msg or "invalid credentials" in error_msg:
             st.error("❌ Courriel ou mot de passe incorrect")
-        elif "too many requests" in error_msg:
-            st.error("❌ Trop de tentatives de connexion. Veuillez patienter quelques minutes.")
+        elif "too many requests" in error_msg or "rate limit" in error_msg:
+            st.error("⏱️ Trop de tentatives de connexion. Veuillez patienter quelques minutes.")
         else:
             st.error(f"❌ Erreur de connexion : {str(e)}")
         return False
@@ -518,12 +537,28 @@ else:
         # AFFICHAGE DU LOGO DE L'ENTREPRISE (remplace l'icône générique)
         if user.get('logo'):
             try:
-                st.image(f"data:image/png;base64,{user['logo']}", width=150)
+                import base64 as b64
+                # Vérifier si le logo est déjà en base64 ou si c'est des bytes
+                logo_data = user['logo']
+                if isinstance(logo_data, str):
+                    # C'est déjà en base64
+                    st.markdown(
+                        f'<div style="text-align: center;"><img src="data:image/png;base64,{logo_data}" width="150" style="border-radius: 8px;"></div>',
+                        unsafe_allow_html=True
+                    )
+                else:
+                    # C'est des bytes, il faut encoder
+                    logo_b64 = b64.b64encode(logo_data).decode('utf-8')
+                    st.markdown(
+                        f'<div style="text-align: center;"><img src="data:image/png;base64,{logo_b64}" width="150" style="border-radius: 8px;"></div>',
+                        unsafe_allow_html=True
+                    )
             except Exception as e:
-                st.caption("⚠️ Logo indisponible")
+                # Icône par défaut en cas d'erreur
+                st.markdown('<div style="text-align: center; font-size: 48px;">🏢</div>', unsafe_allow_html=True)
         else:
             # Icône par défaut si pas de logo
-            st.markdown("🏢", unsafe_allow_html=True)
+            st.markdown('<div style="text-align: center; font-size: 48px;">🏢</div>', unsafe_allow_html=True)
         
         st.write(f"👤 **{user.get('contact_nom', 'Utilisateur')}**")
         st.write(f"🏢 **{user.get('nom_entreprise', 'Entreprise')}**")
@@ -922,7 +957,19 @@ COMMENCER l'analyse par :
         # AFFICHAGE DU LOGO
         if user.get('logo'):
             try:
-                st.image(f"data:image/png;base64,{user['logo']}", width=200)
+                import base64 as b64
+                logo_data = user['logo']
+                if isinstance(logo_data, str):
+                    st.markdown(
+                        f'<img src="data:image/png;base64,{logo_data}" width="200" style="border-radius: 8px;">',
+                        unsafe_allow_html=True
+                    )
+                else:
+                    logo_b64 = b64.b64encode(logo_data).decode('utf-8')
+                    st.markdown(
+                        f'<img src="data:image/png;base64,{logo_b64}" width="200" style="border-radius: 8px;">',
+                        unsafe_allow_html=True
+                    )
             except Exception:
                 st.caption("⚠️ Logo indisponible")
         else:
