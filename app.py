@@ -229,7 +229,7 @@ def signup_user(data):
 
         result = supabase.table('entreprises').insert(entreprise_data).execute()
         
-        if result.data:
+        if result.
             return True
         else:
             st.error("❌ Aucune donnée retournée après inscription")
@@ -246,7 +246,7 @@ def login_user(email, password):
         apply_supabase_auth()
 
         result = supabase.table('entreprises').select("*").eq('contact_email', email).execute()
-        if result.data:
+        if result.
             st.session_state.user = result.data[0]
             st.session_state.logged_in = True
             st.session_state.profile_completed = bool(st.session_state.user.get('logo'))
@@ -334,7 +334,7 @@ if not st.session_state.logged_in:
     
     with tab2:
         signup_data = forms.signup_form()
-        if signup_data:
+        if signup_
             # Validation obligatoire NEQ et RBQ AVANT soumission
             if not signup_data.get("numero_neq") or not signup_data.get("licence_rbq"):
                 st.error("❌ Le NEQ et la licence RBQ sont obligatoires pour créer un compte")
@@ -385,7 +385,7 @@ else:
         # AFFICHAGE DU LOGO STOCKÉ EN BASE64
         if user.get('logo'):
             try:
-                st.image(f"data:image/png;base64,{user['logo']}", width=150)
+                st.image(f"image/png;base64,{user['logo']}", width=150)
             except:
                 st.caption("Logo indisponible")
         st.write(f"👤 **{user['contact_nom']}**")
@@ -427,8 +427,8 @@ else:
         st.markdown("---")
         st.subheader("📈 Dernières analyses")
         recent = supabase.table('soumissions').select("*").eq('entreprise_id', user['id']).order('created_at', desc=True).limit(5).execute()
-        if recent.data:
-            for item in recent.data:
+        if recent.
+            for item in recent.
                 with st.expander(f"📄 {item.get('nom_projet', 'Sans nom')} - {item['created_at'][:10]}"):
                     st.write(f"**Statut:** {item['statut']}")
                     st.write(f"**Recommandation:** {item.get('recommendation', 'N/A')}")
@@ -675,10 +675,10 @@ COMMENCER l'analyse par :
                     st.rerun()
         apply_supabase_auth()
         projets = supabase.table('projets_antecedents').select("*").eq('entreprise_id', user['id']).order('created_at', desc=True).execute()
-        if not projets.data:
+        if not projets.
             st.info("📭 Aucun projet pour le moment")
         else:
-            for projet in projets.data:
+            for projet in projets.
                 with st.expander(f"🏗️ {projet['nom_projet']}"):
                     col_a, col_b = st.columns(2)
                     with col_a:
@@ -707,7 +707,7 @@ COMMENCER l'analyse par :
         # AFFICHAGE DU LOGO STOCKÉ EN BASE64
         if user.get('logo'):
             try:
-                st.image(f"data:image/png;base64,{user['logo']}", width=200)
+                st.image(f"image/png;base64,{user['logo']}", width=200)
             except:
                 st.caption("Logo indisponible")
         
