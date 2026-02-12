@@ -237,16 +237,27 @@ def signup_user(data):
             return False
         
         # Vérifier si l'utilisateur existe déjà AVANT de tenter l'inscription
-        existing_user = get_user_by_email(data["contact_email"])
-        if existing_user:
-            st.error("❌ Cette adresse courriel est déjà utilisée. Veuillez vous connecter.")
-            return False
+        try:
+            existing_user = get_user_by_email(data["contact_email"])
+            if existing_user:
+                st.error("❌ Cette adresse courriel est déjà utilisée. Veuillez vous connecter.")
+                return False
+        except:
+            # Si erreur de vérification, continuer quand même
+            pass
             
-        # Inscription
+        # Inscription avec les métadonnées user (important pour RLS)
         try:
             response = supabase.auth.sign_up({
                 "email": data["contact_email"], 
-                "password": data["password"]
+                "password": data["password"],
+                "options": {
+                    "data": {
+                        "nom_entreprise": data["nom_entreprise"],
+                        "numero_neq": data["numero_neq"],
+                        "licence_rbq": data["licence_rbq"]
+                    }
+                }
             })
         except Exception as auth_error:
             error_msg = str(auth_error).lower()
@@ -263,6 +274,13 @@ def signup_user(data):
             return False
         
         user_id = response.user.id
+        
+        # IMPORTANT: Se connecter temporairement pour contourner RLS
+        # Si la session existe déjà après sign_up (auto-login)
+        if response.session and response.session.access_token:
+            temp_token = response.session.access_token
+            # Appliquer temporairement le token pour l'insertion
+            supabase.postgrest.auth(temp_token)
         
         # Enregistrer les données de l'entreprise
         entreprise_data = {
@@ -283,10 +301,17 @@ def signup_user(data):
 
         result = supabase.table('entreprises').insert(entreprise_data).execute()
         
+        # Déconnexion immédiate après insertion (pour forcer re-login)
+        try:
+            supabase.auth.sign_out()
+        except:
+            pass
+        
         if result.data and len(result.data) > 0:
             return True
         else:
             st.error("❌ Erreur lors de l'enregistrement des informations de l'entreprise")
+            st.info("💡 Votre compte a été créé mais le profil n'a pas pu être enregistré. Contactez le support.")
             return False
 
     except Exception as e:
@@ -300,6 +325,9 @@ def signup_user(data):
             st.error("❌ L'adresse courriel est invalide")
         elif "password" in error_msg:
             st.error("❌ Le mot de passe ne respecte pas les critères requis")
+        elif "row-level security" in error_msg or "policy" in error_msg:
+            st.error("❌ Erreur de permissions. Votre compte a été créé mais le profil n'a pas pu être enregistré.")
+            st.info("💡 Contactez l'administrateur pour activer votre compte.")
         else:
             st.error(f"❌ Erreur lors de l'inscription : {str(e)}")
         return False
