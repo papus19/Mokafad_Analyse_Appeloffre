@@ -5,10 +5,10 @@ import google.generativeai as genai
 from supabase import create_client, Client
 from pypdf import PdfReader
 import forms
-import storage
 import requests
 from datetime import datetime, timedelta
 import re
+import base64
 
 # --- CONFIGURATION ---
 load_dotenv()
@@ -92,7 +92,7 @@ supabase: Client = create_client(
 )
 
 # ============================================
-# 🆕 SYSTÈME DE FALLBACK GROQ → GEMINI
+# 🆕 SYSTÈME DE FALLBACK: GEMINI EN PREMIER (SANS AFFICHAGE)
 # ============================================
 
 class LLMManager:
@@ -101,12 +101,7 @@ class LLMManager:
         self._init_providers()
     
     def _init_providers(self):
-        if os.getenv("GROQ_API_KEY"):
-            self.providers.append({
-                "name": "Groq LLaMA 3.3 70B",
-                "api_key": os.getenv("GROQ_API_KEY"),
-                "type": "groq"
-            })
+        # GEMINI EN PREMIER COMME EXIGÉ
         if os.getenv("GEMINI_API_KEY"):
             try:
                 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
@@ -118,8 +113,17 @@ class LLMManager:
                 })
             except Exception as e:
                 st.warning(f"⚠️ Gemini non disponible: {str(e)[:100]}")
+        
+        # Groq en second
+        if os.getenv("GROQ_API_KEY"):
+            self.providers.append({
+                "name": "Groq LLaMA 3.3 70B",
+                "api_key": os.getenv("GROQ_API_KEY"),
+                "type": "groq"
+            })
+        
         if not self.providers:
-            st.error("❌ Aucun LLM configuré ! Ajoutez GROQ_API_KEY ou GEMINI_API_KEY dans .env")
+            st.error("❌ Aucun LLM configuré ! Ajoutez GEMINI_API_KEY ou GROQ_API_KEY dans .env")
             st.stop()
     
     def analyze(self, prompt: str, max_tokens: int = 2000) -> dict:
@@ -190,6 +194,11 @@ def apply_supabase_auth():
 # --- FONCTIONS BASE DE DONNÉES ---
 def signup_user(data):
     try:
+        # Validation obligatoire NEQ et RBQ
+        if not data.get("numero_neq") or not data.get("licence_rbq"):
+            st.error("❌ Le NEQ et la licence RBQ sont obligatoires")
+            return False
+            
         supabase.auth.sign_up({
             "email": data["contact_email"], 
             "password": data["password"]
@@ -248,7 +257,7 @@ def login_user(email, password):
         if result.data:
             st.session_state.user = result.data[0]
             st.session_state.logged_in = True
-            st.session_state.profile_completed = bool(st.session_state.user.get('logo_url'))
+            st.session_state.profile_completed = bool(st.session_state.user.get('logo'))
             return True
         return False
     except Exception as e:
@@ -258,14 +267,6 @@ def login_user(email, password):
 def get_user_by_email(email):
     result = supabase.table('entreprises').select("*").eq('contact_email', email).execute()
     return result.data[0] if result.data else None
-
-def update_entreprise_logo(entreprise_id, logo_url):
-    apply_supabase_auth()
-    supabase.table('entreprises').update({"logo_url": logo_url}).eq('id', entreprise_id).execute()
-    # 🔁 Recharger l'utilisateur pour refléter le changement
-    user_updated = supabase.table('entreprises').select("*").eq('id', entreprise_id).execute()
-    if user_updated.data:
-        st.session_state.user = user_updated.data[0]
 
 def add_projet_antecedent(projet_data):
     try:
@@ -278,6 +279,8 @@ def add_projet_antecedent(projet_data):
             "specifications": projet_data["specifications"]
         }
         if projet_data.get("document"):
+            # Upload document projet via storage existant
+            import storage
             doc_url = storage.upload_document_projet(supabase, projet_data["document"])
             if doc_url:
                 data["document_url"] = doc_url
@@ -301,6 +304,7 @@ def save_soumission(entreprise_id, soumission_data):
         }
         if soumission_data.get("document"):
             try:
+                import storage
                 doc_url = storage.upload_soumission(supabase, soumission_data["document"])
                 if doc_url:
                     data_to_save["document_url"] = doc_url
@@ -330,28 +334,39 @@ if not st.session_state.logged_in:
                     st.rerun()
     with tab2:
         signup_data = forms.signup_form()
-        if signup_data:  # ✅ CORRECTION ICI
-            if get_user_by_email(signup_data["contact_email"]):
+        if signup_data:
+            # Validation obligatoire NEQ et RBQ AVANT soumission
+            if not signup_data.get("numero_neq") or not signup_data.get("licence_rbq"):
+                st.error("❌ Le NEQ et la licence RBQ sont obligatoires pour créer un compte")
+            elif get_user_by_email(signup_data["contact_email"]):
                 st.error("❌ Cet email est déjà utilisé")
             elif signup_user(signup_data):
-                st.success("✅ Compte créé ! Veuillez compléter votre profil.")
+                st.success("✅ Compte créé ! Veuillez valider votre courriel. Pensez à vérifier dans vos courriels indésirables (spam).")
                 st.rerun()
 
-# --- PROFIL À COMPLÉTER ---
+# --- PROFIL À COMPLÉTER (LOGO DIRECT DANS COLONNE) ---
 elif not st.session_state.profile_completed:
     st.warning("⚠️ Veuillez compléter votre profil pour continuer")
     profile_data = forms.profile_completion_form(st.session_state.user)
-    if profile_data:  # ✅ CORRECTION ICI
+    if profile_data:
         apply_supabase_auth()
+        # STOCKAGE DIRECT DU LOGO DANS LA COLONNE 'logo' (base64)
         if profile_data["logo_file"]:
             try:
-                logo_url = storage.upload_logo(supabase, profile_data["logo_file"])
-                if logo_url:
-                    update_entreprise_logo(st.session_state.user['id'], logo_url)
+                logo_bytes = profile_data["logo_file"].read()
+                logo_base64 = base64.b64encode(logo_bytes).decode('utf-8')
+                supabase.table('entreprises').update({"logo": logo_base64}).eq('id', st.session_state.user['id']).execute()
+                # Recharger l'utilisateur
+                user_updated = supabase.table('entreprises').select("*").eq('id', st.session_state.user['id']).execute()
+                if user_updated.data:
+                    st.session_state.user = user_updated.data[0]
             except Exception as e:
-                st.warning(f"⚠️ Logo non uploadé: {str(e)}")
+                st.warning(f"⚠️ Erreur lors de l'enregistrement du logo: {str(e)}")
+        
+        # Ajout des projets antérieurs
         for projet in profile_data["projets"]:
             add_projet_antecedent(projet)
+        
         st.session_state.profile_completed = True
         st.success("✅ Profil complété ! Redirection...")
         st.rerun()
@@ -365,8 +380,12 @@ else:
             f'<div style="text-align: center; margin-bottom: 20px;"><img src="{MOKAFAD_LOGO_URL}" width="80"></div>',
             unsafe_allow_html=True
         )
-        if user.get('logo_url'):
-            st.image(user['logo_url'], width=150)
+        # AFFICHAGE DU LOGO STOCKÉ EN BASE64
+        if user.get('logo'):
+            try:
+                st.image(f"data:image/png;base64,{user['logo']}", width=150)
+            except:
+                st.caption("Logo indisponible")
         st.write(f"👤 **{user['contact_nom']}**")
         st.write(f"🏢 **{user['nom_entreprise']}**")
         st.write(f"📍 {user['ville']}, {user['province']}")
@@ -412,9 +431,6 @@ else:
                     st.write(f"**Statut:** {item['statut']}")
                     st.write(f"**Recommandation:** {item.get('recommendation', 'N/A')}")
                     st.write(f"**Score:** {item.get('score', 'N/A')}")
-                    if item.get('analyse_json') and isinstance(item['analyse_json'], dict):
-                        llm_used = item['analyse_json'].get('llm_used', 'N/A')
-                        st.write(f"**Modèle IA:** {llm_used}")
         else:
             st.info("📭 Aucune analyse récente")
     
@@ -433,64 +449,161 @@ else:
                     text = " ".join([page.extract_text() or "" for page in reader.pages])[:8000]
                     
                     today = datetime.today()
-                    deadline_min = add_business_days(today, 5).strftime("%Y-%m-%d")
-                    visit_min = add_business_days(today, 3).strftime("%Y-%m-%d")
                     today_str = today.strftime("%Y-%m-%d")
+                    
+                    # Formater les projets antérieurs pour le prompt
+                    projets_text = "\n".join([
+                        f"- {p['nom_projet']} ({p['montant']}$, {p['duree_jours']} jours): {p['specifications']}"
+                        for p in projets_antecedents
+                    ]) or "Aucun projet antérieur fourni."
+                    
+                    # PROMPT EXACTEMENT COMME EXIGÉ DANS LA DEMANDE
+                    prompt_with_context = f"""
+Analysez cet appel d'offres PUBLIC (adressé à toutes les entreprises) pour déterminer si l'entreprise doit soumissionner.
 
-                    specialites_str = " ".join(user.get('specialites', [])).lower()
-                    categorie_entreprise = "Résidentiel" if any(kw in specialites_str for kw in ['résidentiel', 'maison', 'habitation', 'residential']) else "Commercial"
-
-                    prompt = f"""
-Vous êtes un expert en soumission d'appels d'offres au Québec. Analysez objectivement l'appel d'offre fourni ci-dessous en vous basant UNIQUEMENT sur les informations suivantes :
-
-### Informations sur votre entreprise :
+Informations sur l'entreprise :
 - Nom : {user['nom_entreprise']}
 - Spécialités : {', '.join(user.get('specialites', [])) or 'Non spécifiées'}
-- Catégorie cible : {categorie_entreprise}
-- Expériences antérieures : {len(projets_antecedents)} projets similaires (voir détails ci-dessous)
-- Disponibilité : Vous avez besoin de 5 jours ouvrables minimum pour préparer une soumission.
-- Contact client possible : Oui (vous avez un numéro de téléphone et un email).
+- NEQ : {user.get('numero_neq', 'N/A')}
+- Licence RBQ : {user.get('licence_rbq', 'N/A')}
+- Adresse : {user.get('adresse')}, {user.get('ville')}, {user.get('province')} {user.get('code_postal')}
+- Contact : {user.get('contact_nom')}, {user.get('contact_telephone')}, {user.get('contact_email')}
 
-### Projets antérieurs pertinents :
-{chr(10).join([f"- {p['nom_projet']} ({p['montant']}$, {p['duree_jours']} jours)" for p in projets_antecedents[:3]]) or "Aucun projet antérieur fourni."}
+Projets antérieurs pertinents :
+{projets_text}
 
-### Contexte temporel :
-- Date du jour : {today_str}
-- Date minimale pour une visite de chantier : {visit_min} (au moins 3 jours ouvrables après aujourd'hui)
-- Date limite minimale pour soumissionner : {deadline_min} (au moins 5 jours ouvrables après aujourd'hui)
+DATE DU JOUR : {today_str}
+
+═══════════════════════════════════════════════════════════════
+📋 INSTRUCTIONS CRITIQUES POUR L'ANALYSE - À RESPECTER ABSOLUMENT
+═══════════════════════════════════════════════════════════════
+
+🎯 OBJECTIF : Analyser cet appel d'offres PUBLIC (adressé à toutes les entreprises) pour déterminer si l'entreprise doit soumissionner.
+
+⚠️ CONTEXTE IMPORTANT :
+- Cet appel d'offres est PUBLIC et ouvert à toutes les entreprises qualifiées
+- L'analyse doit déterminer si CETTE entreprise spécifique devrait soumissionner
+- Comparer les exigences avec le profil et l'expérience de l'entreprise
+
+📝 STYLE D'ÉCRITURE OBLIGATOIRE :
+- Dans l'ANALYSE : Utiliser UNIQUEMENT la 2ème ou 3ème personne du singulier/pluriel
+  ✅ "Vous possédez", "L'entreprise a", "Elle dispose", "Ils ont"
+  ❌ JAMAIS "Je pense", "J'estime", "Nous pensons"
+- Dans la RECOMMANDATION FINALE : Utiliser la 1ère personne
+  ✅ "Je recommande GO", "Je suggère de ne pas soumissionner"
+- Être concis, précis et professionnel
+- Éviter les phrases trop longues
+- Aller droit au but
+
+⚠️ AVERTISSEMENT IA OBLIGATOIRE :
+COMMENCER l'analyse par :
+"⚠️ AVERTISSEMENT : Cette analyse est générée par un système d'intelligence artificielle. Bien que nous nous efforcions de fournir des informations précises basées sur le document fourni, des erreurs d'interprétation peuvent survenir. Il est impératif de vérifier personnellement toutes les informations critiques dans le document original avant de prendre une décision."
+
+📅 ANALYSE DES DATES - TRÈS CRITIQUE :
+
+1. **Date de visite des lieux** :
+   - Identifier la date de visite dans le document
+   - Calculer le délai entre AUJOURD'HUI ({today_str}) et la date de visite
+   - Si délai < 5 jours ouvrables : 
+     ⚠️ POINT FAIBLE MAJEUR : "La visite des lieux est prévue le [DATE], soit dans seulement X jours ouvrables. Ce délai très court peut compliquer l'organisation et la participation à la visite obligatoire."
+   - Si délai ≥ 5 jours ouvrables :
+     ✅ POINT FORT : "La visite des lieux est prévue le [DATE], soit dans X jours ouvrables, ce qui laisse un délai raisonnable pour s'organiser."
+
+2. **Délai visite → clôture** :
+   - Identifier la date de clôture/dépôt des soumissions
+   - Calculer jours ouvrables entre visite et clôture
+   - Si < 5 jours ouvrables :
+     ⚠️ POINT FAIBLE : "Le délai entre la visite et la clôture est de seulement X jours ouvrables, ce qui est insuffisant pour préparer une soumission complète après la visite."
+   - Si ≥ 5 jours ouvrables :
+     ✅ POINT NEUTRE : Mentionner simplement le délai
+
+🚫 INFORMATIONS NON DISPONIBLES - NE PAS INVENTER :
+- NE PAS mentionner les assurances si non trouvées dans le document
+- NE PAS mentionner le cautionnement si non trouvé dans le document  
+- NE PAS inventer de montants, dates ou exigences
+- SI une information n'est PAS dans le document : indiquer clairement "Information non disponible dans le document"
+- Se limiter STRICTEMENT aux informations présentes dans le document fourni
+
+🏗️ COMPARAISON AVEC PROJETS ANTÉRIEURS :
+- Comparer le montant estimé avec les projets antérieurs
+- Comparer la durée estimée avec les projets antérieurs
+- Comparer le type de travaux avec les spécifications des projets antérieurs
+- Si AUCUNE expérience similaire : 
+  "L'entreprise n'a pas de projet similaire dans son historique. Elle devra démontrer sa capacité à réaliser ce type de travaux par d'autres moyens (références, sous-traitants, partenariats)."
+- Si expérience similaire : 
+  "L'entreprise a déjà réalisé des projets comparables, notamment [liste avec montants et durées], ce qui démontre sa capacité à réaliser ce type de travaux."
+
+📊 STRUCTURE DE LA RÉPONSE :
+
+1. **AVERTISSEMENT IA** (obligatoire en haut)
+
+2. **CONTEXTE DE L'APPEL D'OFFRES**
+   - "Cet appel d'offres public est ouvert à toutes les entreprises qualifiées."
+   - Nature du projet en 1-2 phrases
+   - Principal enjeu pour CETTE entreprise
+
+3. **DATES CLÉS ET DÉLAIS** ⏰
+   - Date du jour : {today_str}
+   - Date visite : [DATE] → Délai : X jours ouvrables [✅/⚠️/❌]
+   - Date clôture : [DATE]
+   - Délai visite → clôture : X jours ouvrables [✅/⚠️/❌]
+   - Date début travaux : [DATE si disponible]
+   - Date fin travaux : [DATE si disponible]
+   - Durée totale : X jours [si disponible]
+
+4. **ADÉQUATION AVEC L'EXPÉRIENCE** 🏗️
+   - Comparaison détaillée avec projets antérieurs
+   - Points de correspondance ou différences majeures
+   - Montants comparables ? Durées similaires ? Types de travaux ?
+
+5. **POINTS FORTS** ✅ (maximum 5 points)
+   - Chaque point avec référence précise : (Réf: Page X, Section Y)
+   - Inclure les délais raisonnables si applicable
+
+6. **POINTS FAIBLES** ⚠️ (maximum 5 points)
+   - Chaque point avec référence précise ou [Information non disponible]
+   - Inclure les délais courts si applicable
+   - Inclure le manque d'expérience similaire si applicable
+
+7. **CRITÈRES D'ADMISSIBILITÉ** 📋
+   - UNIQUEMENT mentionner ce qui est TROUVÉ dans le document
+   - Licence RBQ : [OUI/NON/NON SPÉCIFIÉ] - Référence : Page X
+   - Si assurances TROUVÉES : [Montant/Type] - Référence : Page X
+   - Si cautionnement TROUVÉ : [Montant/%] - Référence : Page X
+   - Expérience minimale : [Description si trouvée] - Référence : Page X
+   - NE PAS inventer ces informations si absentes
+
+8. **ACTIONS PRIORITAIRES** 🎯 (maximum 5 actions concrètes)
+   - 🔴 URGENT : [Action avec date limite si délai court]
+   - 🟠 IMPORTANT : [Action nécessaire]
+   - 🟡 À PRÉVOIR : [Action recommandée]
+
+9. **RECOMMANDATION FINALE** 💭 (ici utiliser 1ère personne)
+   - "Je recommande GO" / "Je recommande NO-GO" / "Je recommande PEUT-ÊTRE"
+   - Justification en 2-3 paragraphes CONCIS
+   - Mentionner les facteurs décisifs
+
+10. **SCORE** : X/100
+    - Justification du score en 1-2 phrases
+
+═══════════════════════════════════════════════════════════════
+
+⚠️ RAPPELS FINAUX :
+- ✅ Appel d'offres PUBLIC pour toutes entreprises
+- ✅ Comparer date visite avec AUJOURD'HUI ({today_str})
+- ✅ Vérifier délai visite → clôture (min 5 jours ouvrables)
+- ✅ 2ème/3ème personne dans l'analyse
+- ✅ 1ère personne dans la recommandation
+- ✅ Ne mentionner que les infos TROUVÉES dans le document
+- ❌ NE PAS inventer assurances/cautionnement si absents
+- ✅ Comparer avec projets antérieurs
+- ✅ Être CONCIS et PRÉCIS
 
 ### Appel d'offre à analyser :
 {text}
-
-### Instructions strictes :
-1. NE FAITES AUCUNE HYPOTHÈSE. Si une information n'est pas dans le document, dites "non mentionné".
-2. Vérifiez les critères suivants :
-   - **Catégorie** : L'appel est-il résidentiel ou commercial ? Votre entreprise correspond-elle ?
-   - **Visite de chantier** : Si une date de visite est mentionnée, est-elle ≥ {visit_min} ?
-   - **Expérience similaire** : Le document décrit-il un type de projet que vous avez déjà réalisé ?
-   - **Délai de soumission** : La date limite est-elle ≥ {deadline_min} ?
-   - **Contact client** : Le document indique-t-il un contact ? (vous pouvez toujours appeler, mais vérifiez si requis)
-
-3. Recommandation :
-   - **GO** : Tous les critères de base sont remplis.
-   - **PEUT-ÊTRE** : Manque seulement l'expérience similaire, mais autres critères OK.
-   - **NO-GO** : Plus d'un critère manquant.
-
-4. Structurez votre réponse ainsi :
-   - **Recommandation** : [GO / PEUT-ÊTRE / NO-GO]
-   - **Score** : [0–100]
-   - **Vos forces pour cet appel d'offre** :
-     - ...
-   - **Points de vigilance** :
-     - ...
-   - **Actions recommandées** :
-     - ...
-   - **Justification concise** : ...
-
-Utilisez un ton professionnel, courtois, et adressez-vous à l'utilisateur avec "vous". Ne mentionnez pas votre rôle d'IA.
 """
-
-                    analysis_result = llm_manager.analyze(prompt, max_tokens=2000)
+                    
+                    analysis_result = llm_manager.analyze(prompt_with_context, max_tokens=2500)
                     
                     if not analysis_result["success"]:
                         st.error(f"❌ {analysis_result['error']}")
@@ -499,9 +612,8 @@ Utilisez un ton professionnel, courtois, et adressez-vous à l'utilisateur avec 
                     result = analysis_result["result"]
                     
                     st.markdown("### 📋 Résultat de l'analyse IA")
-                    st.caption(f"🤖 Modèle utilisé: **{analysis_result['provider']}**")
                     st.markdown("---")
-                    st.markdown(result)
+                    st.markdown(result)  # PAS D'AFFICHAGE DU MODÈLE UTILISÉ
                     
                     rec = "INCONNU"
                     if "GO" in result.upper() and "NO-GO" not in result.upper() and "NO GO" not in result.upper():
@@ -521,8 +633,8 @@ Utilisez un ton professionnel, courtois, et adressez-vous à l'utilisateur avec 
                         "nom_projet": nom_projet,
                         "document": uploaded_file,
                         "analyse_json": {
-                            "raw_response": result,
-                            "llm_used": analysis_result["provider"]
+                            "raw_response": result
+                            # PAS DE STOCKAGE DU MODÈLE UTILISÉ
                         },
                         "recommendation": rec,
                         "score": score,
@@ -590,8 +702,12 @@ Utilisez un ton professionnel, courtois, et adressez-vous à l'utilisateur avec 
         st.write(f"**Téléphone** : {user.get('contact_telephone', 'N/A')}")
         st.write(f"**Email** : {user['contact_email']}")
         
-        if user.get('logo_url'):
-            st.image(user['logo_url'], width=200)
+        # AFFICHAGE DU LOGO STOCKÉ EN BASE64
+        if user.get('logo'):
+            try:
+                st.image(f"data:image/png;base64,{user['logo']}", width=200)
+            except:
+                st.caption("Logo indisponible")
         
         if st.button("✏️ Modifier le profil"):
             st.session_state.profile_completed = False
