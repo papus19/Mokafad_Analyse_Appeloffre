@@ -185,6 +185,8 @@ if 'profile_completed' not in st.session_state:
     st.session_state.profile_completed = False
 if 'access_token' not in st.session_state:
     st.session_state.access_token = None
+if 'show_login_tab' not in st.session_state:
+    st.session_state.show_login_tab = True
 
 def apply_supabase_auth():
     token = st.session_state.get('access_token')
@@ -199,24 +201,16 @@ def signup_user(data):
             st.error("❌ Le NEQ et la licence RBQ sont obligatoires")
             return False
             
-        supabase.auth.sign_up({
+        # Inscription sans tentative de connexion immédiate
+        response = supabase.auth.sign_up({
             "email": data["contact_email"], 
             "password": data["password"]
         })
-        import time
-        time.sleep(2)
-
-        session = supabase.auth.sign_in_with_password({
-            "email": data["contact_email"], 
-            "password": data["password"]
-        })
-
-        if not session or not getattr(session, 'session', None) or not session.session.access_token:
-            raise ValueError("Impossible de récupérer le token d'accès après connexion")
-
-        st.session_state.access_token = session.session.access_token
-        apply_supabase_auth()
-
+        
+        # Récupérer l'ID utilisateur depuis la réponse
+        user_id = response.user.id
+        
+        # Enregistrer les données de l'entreprise
         entreprise_data = {
             "nom_entreprise": data["nom_entreprise"],
             "numero_neq": data["numero_neq"],
@@ -230,14 +224,12 @@ def signup_user(data):
             "contact_nom": data["contact_nom"],
             "contact_telephone": data["contact_telephone"],
             "contact_email": data["contact_email"],
-            "user_id": session.user.id
+            "user_id": user_id
         }
 
         result = supabase.table('entreprises').insert(entreprise_data).execute()
+        
         if result.data:
-            st.session_state.user = result.data[0]
-            st.session_state.logged_in = True
-            st.session_state.profile_completed = False
             return True
         else:
             st.error("❌ Aucune donnée retournée après inscription")
@@ -261,7 +253,11 @@ def login_user(email, password):
             return True
         return False
     except Exception as e:
-        st.error(f"❌ Erreur connexion: {str(e)}")
+        error_msg = str(e).lower()
+        if "email not confirmed" in error_msg or "email_not_confirmed" in error_msg:
+            st.error("📧 Votre courriel n'a pas encore été validé. Veuillez cliquer sur le lien dans le courriel de confirmation que nous vous avons envoyé. Pensez à vérifier dans vos courriels indésirables (spam).")
+        else:
+            st.error(f"❌ Erreur connexion: {str(e)}")
         return False
 
 def get_user_by_email(email):
@@ -323,7 +319,10 @@ if st.session_state.logged_in and st.session_state.access_token:
 
 # --- AUTHENTIFICATION ---
 if not st.session_state.logged_in:
+    # Déterminer l'onglet actif après une inscription réussie
+    default_tab = 0 if st.session_state.show_login_tab else 1
     tab1, tab2 = st.tabs(["🔐 Connexion", "📝 Inscription"])
+    
     with tab1:
         with st.form("login_form"):
             email = st.text_input("📧 Email")
@@ -332,6 +331,7 @@ if not st.session_state.logged_in:
                 if login_user(email, password):
                     st.success("✅ Connecté !")
                     st.rerun()
+    
     with tab2:
         signup_data = forms.signup_form()
         if signup_data:
@@ -341,7 +341,9 @@ if not st.session_state.logged_in:
             elif get_user_by_email(signup_data["contact_email"]):
                 st.error("❌ Cet email est déjà utilisé")
             elif signup_user(signup_data):
-                st.success("✅ Compte créé ! Veuillez valider votre courriel. Pensez à vérifier dans vos courriels indésirables (spam).")
+                st.success("✅ Compte créé ! Un courriel de validation a été envoyé. **Pensez à vérifier dans vos courriels indésirables (spam).**")
+                # Basculer vers l'onglet de connexion et réinitialiser le formulaire
+                st.session_state.show_login_tab = True
                 st.rerun()
 
 # --- PROFIL À COMPLÉTER (LOGO DIRECT DANS COLONNE) ---
