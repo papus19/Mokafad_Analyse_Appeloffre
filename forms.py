@@ -1,148 +1,137 @@
 import streamlit as st
-import re
-
-def validate_email(email):
-    """Valider format email"""
-    return re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email)
-
-def validate_password(password):
-    """Valider mot de passe"""
-    if len(password) < 8:
-        return False, "Minimum 8 caractères"
-    if not re.search(r'[A-Z]', password):
-        return False, "Au moins une majuscule"
-    if not re.search(r'[0-9]', password):
-        return False, "Au moins un chiffre"
-    if not re.search(r'[!@#$%^&*(),.?":{}|<>]', password):
-        return False, "Au moins un caractère spécial"
-    return True, ""
 
 def signup_form():
-    """Formulaire d'inscription initial - toutes les informations de base"""
-    st.subheader("📝 Informations de l'entreprise")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        nom_entreprise = st.text_input("🏢 Nom de l'entreprise *", placeholder="Ex: Électro Québec Inc.")
-        neq = st.text_input("🔢 Numéro NEQ (Québec)", placeholder="123456789")
-        rbq = st.text_input("📋 Licence RBQ", placeholder="1234-5678")
-        specialites = st.multiselect(
-            "⚡ Spécialité(s) *",
-            ["Électricité Résidentiel", "Électricité Commerciale"],
-            help="Sélectionnez au moins une spécialité"
-        )
-    
-    with col2:
-        st.subheader("📍 Adresse")
-        rue = st.text_input("Rue *", placeholder="123 Rue Principale")
-        ville = st.text_input("Ville *", placeholder="Montréal")
-        province = st.selectbox("Province *", ["Québec"], index=0)
-        code_postal = st.text_input("Code postal *", placeholder="H1A 1A1")
-        pays = st.selectbox("Pays *", ["Canada"], index=0)
-    
-    st.markdown("---")
-    st.subheader("👤 Contact principal")
-    
-    col3, col4 = st.columns(2)
-    
-    with col3:
-        contact_nom = st.text_input("Nom complet *", placeholder="Jean Dupont")
-        contact_email = st.text_input("📧 Email *", placeholder="contact@entreprise.com")
-        valid_email = validate_email(contact_email) if contact_email else None
-    
-    with col4:
-        contact_telephone = st.text_input("📱 Téléphone *", placeholder="(514) 123-4567")
-        password = st.text_input("🔒 Mot de passe *", type="password", 
-                                help="8+ caractères, 1 majuscule, 1 chiffre, 1 caractère spécial")
-        password_confirm = st.text_input("🔒 Confirmer mot de passe *", type="password")
-    
-    # Validation
-    errors = []
-    
-    if st.button("✅ Créer mon compte", type="primary", use_container_width=True):
-        if not nom_entreprise:
-            errors.append("❌ Nom de l'entreprise requis")
-        if not specialites:
-            errors.append("❌ Sélectionnez au moins une spécialité")
-        if not rue or not ville or not code_postal:
-            errors.append("❌ Adresse complète requise")
-        if not contact_nom or not contact_email or not contact_telephone:
-            errors.append("❌ Informations de contact requises")
+    """Formulaire d'inscription avec validation"""
+    with st.form("signup_form"):
+        st.subheader("Informations de l'entreprise")
         
-        if contact_email and not valid_email:
-            errors.append("❌ Format email invalide")
+        col1, col2 = st.columns(2)
         
-        if password:
-            valid_pwd, msg = validate_password(password)
-            if not valid_pwd:
-                errors.append(f"❌ Mot de passe: {msg}")
-            elif password != password_confirm:
-                errors.append("❌ Les mots de passe ne correspondent pas")
+        with col1:
+            nom_entreprise = st.text_input("Nom de l'entreprise *")
+            numero_neq = st.text_input("Numéro NEQ *", help="Numéro d'entreprise du Québec (10 chiffres)")
+            licence_rbq = st.text_input("Licence RBQ *", help="Numéro de licence de la Régie du bâtiment du Québec")
+            
+        with col2:
+            # CORRECTION #3 : Ajout des nouvelles spécialités résidentielles/commerciales
+            specialites = st.multiselect(
+                "Spécialités * (Résidentiel & Commercial)",
+                options=[
+                    "16200 - Électricité",
+                    "16400 - Système de sécurité",
+                    "15000 - Plomberie",
+                    "04200 - Maçonnerie",
+                    "06100 - Ébénisterie/Menuiserie",
+                    "01000 - Entrepreneur général",
+                    "99000 - Autre (préciser dans le profil)",
+                    "Résidentiel",
+                    "Commercial"
+                ],
+                default=[],
+                help="Sélectionnez toutes les spécialités que vous exercez en résidentiel et/ou commercial"
+            )
+            adresse = st.text_input("Adresse")
+            ville = st.text_input("Ville")
         
-        if errors:
-            for error in errors:
-                st.error(error)
-            return None
+        col3, col4 = st.columns(2)
         
-        # Retourner les données validées
-        return {
-            "nom_entreprise": nom_entreprise,
-            "numero_neq": neq,
-            "licence_rbq": rbq,
-            "specialites": specialites,
-            "adresse": rue,
-            "ville": ville,
-            "province": province,
-            "code_postal": code_postal,
-            "pays": pays,
-            "contact_nom": contact_nom,
-            "contact_telephone": contact_telephone,
-            "contact_email": contact_email,
-            "password": password
-        }
+        with col3:
+            province = st.selectbox("Province", ["Québec", "Ontario", "Nouveau-Brunswick", "Autre"], index=0)
+            code_postal = st.text_input("Code postal")
+            
+        with col4:
+            contact_nom = st.text_input("Nom du contact")
+            contact_telephone = st.text_input("Téléphone")
+        
+        st.subheader("Authentification")
+        contact_email = st.text_input("Adresse courriel *", help="Servira pour la connexion")
+        password = st.text_input("Mot de passe *", type="password", help="Minimum 6 caractères")
+        password_confirm = st.text_input("Confirmer le mot de passe *", type="password")
+        
+        submit = st.form_submit_button("📝 Créer mon compte", use_container_width=False)
+        
+        if submit:
+            # Validation
+            if not nom_entreprise or not numero_neq or not licence_rbq or not contact_email or not password:
+                st.error("❌ Veuillez remplir tous les champs obligatoires (*)")
+                return None
+            
+            if password != password_confirm:
+                st.error("❌ Les mots de passe ne correspondent pas")
+                return None
+            
+            if len(password) < 6:
+                st.error("❌ Le mot de passe doit contenir au moins 6 caractères")
+                return None
+            
+            if not specialites:
+                st.error("❌ Veuillez sélectionner au moins une spécialité")
+                return None
+            
+            return {
+                "nom_entreprise": nom_entreprise,
+                "numero_neq": numero_neq,
+                "licence_rbq": licence_rbq,
+                "specialites": specialites,
+                "adresse": adresse,
+                "ville": ville,
+                "province": province,
+                "code_postal": code_postal,
+                "pays": "Canada",
+                "contact_nom": contact_nom,
+                "contact_telephone": contact_telephone,
+                "contact_email": contact_email,
+                "password": password
+            }
     
     return None
 
-def profile_completion_form(user_data):
-    """Formulaire de complétion de profil après inscription"""
-    st.subheader("🖼️ Logo de l'entreprise")
-    logo_file = st.file_uploader("Téléverser logo (PNG, JPG)", type=["png", "jpg", "jpeg"])
+
+def profile_completion_form(user):
+    """Formulaire de complétion du profil après inscription"""
+    st.info("👋 Bienvenue ! Complétez votre profil pour accéder à l'application.")
     
-    st.markdown("---")
-    st.subheader("🏗️ Projets antérieurs")
-    
-    # Nombre de projets à ajouter
-    nb_projets = st.number_input("Nombre de projets à ajouter", min_value=0, max_value=10, value=0)
-    
-    projets = []
-    
-    for i in range(nb_projets):
-        with st.expander(f"Projet #{i+1}"):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                nom_projet = st.text_input(f"Nom du projet", key=f"nom_{i}")
-                montant = st.number_input(f"Montant ($)", min_value=0, key=f"montant_{i}")
-                duree = st.number_input(f"Durée (jours)", min_value=1, key=f"duree_{i}")
-            
-            with col2:
-                specifications = st.text_area(f"Spécifications", key=f"spec_{i}")
-                document = st.file_uploader(f"Document PDF", type=["pdf"], key=f"doc_{i}")
-            
-            if nom_projet:
-                projets.append({
-                    "nom_projet": nom_projet,
-                    "montant": montant,
-                    "duree_jours": duree,
-                    "specifications": specifications,
-                    "document": document
-                })
-    
-    if st.button("💾 Sauvegarder le profil", type="primary"):
-        return {
-            "logo_file": logo_file,
-            "projets": projets
-        }
+    with st.form("complete_profile"):
+        st.subheader("📸 Logo de l'entreprise")
+        logo_file = st.file_uploader(
+            "Uploader votre logo (optionnel)",
+            type=['png', 'jpg', 'jpeg'],
+            help="Format recommandé : PNG carré, max 2MB"
+        )
+        
+        st.subheader("🏗️ Projets antérieurs (optionnel)")
+        st.write("Ajoutez vos projets passés pour améliorer la précision des analyses")
+        
+        nb_projets = st.number_input("Nombre de projets à ajouter", min_value=0, max_value=5, value=0)
+        
+        projets = []
+        for i in range(nb_projets):
+            with st.expander(f"Projet {i+1}"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    nom = st.text_input(f"Nom du projet {i+1}", key=f"nom_{i}")
+                    montant = st.number_input(f"Montant ($)", min_value=0, value=0, key=f"montant_{i}")
+                with col2:
+                    duree = st.number_input(f"Durée (jours)", min_value=1, value=30, key=f"duree_{i}")
+                    doc = st.file_uploader(f"Document PDF (optionnel)", type=['pdf'], key=f"doc_{i}")
+                
+                specs = st.text_area(f"Spécifications", key=f"specs_{i}")
+                
+                if nom:
+                    projets.append({
+                        "nom_projet": nom,
+                        "montant": montant,
+                        "duree_jours": duree,
+                        "specifications": specs,
+                        "document": doc
+                    })
+        
+        submit = st.form_submit_button("✅ Terminer la configuration", use_container_width=False)
+        
+        if submit:
+            return {
+                "logo_file": logo_file,
+                "projets": projets
+            }
     
     return None
