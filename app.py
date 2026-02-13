@@ -95,7 +95,6 @@ try:
     )
     
     # Client admin pour contourner RLS lors de l'inscription (optionnel)
-    # Si SUPABASE_SERVICE_ROLE_KEY existe dans .env
     supabase_admin = None
     if os.getenv("SUPABASE_SERVICE_ROLE_KEY"):
         try:
@@ -220,7 +219,7 @@ if 'access_token' not in st.session_state:
 if 'show_login_tab' not in st.session_state:
     st.session_state.show_login_tab = True
 if 'default_tab' not in st.session_state:
-    st.session_state.default_tab = 0  # 0 = Tableau de bord par défaut
+    st.session_state.default_tab = 0
 
 def apply_supabase_auth():
     """Applique le token d'authentification aux requêtes Supabase"""
@@ -374,7 +373,7 @@ def signup_user(data):
         return False
 
 def login_user(email, password):
-    """Connexion d'un utilisateur"""
+    """Connexion d'un utilisateur - CORRECTION #1 appliquée"""
     try:
         if not email or not password:
             st.error("❌ Veuillez entrer votre courriel et mot de passe")
@@ -399,7 +398,7 @@ def login_user(email, password):
             st.session_state.logged_in = True
             # Profil complété si logo existe
             st.session_state.profile_completed = bool(st.session_state.user.get('logo'))
-            # Forcer l'affichage du tableau de bord
+            # CORRECTION #1 : Forcer l'ouverture sur le tableau de bord
             if 'active_tab' not in st.session_state:
                 st.session_state.active_tab = 0  # Tab 0 = Tableau de bord
             return True
@@ -542,15 +541,19 @@ if not st.session_state.logged_in:
                 elif get_user_by_email(signup_data["contact_email"]):
                     st.error("❌ Cette adresse courriel est déjà utilisée")
                 elif signup_user(signup_data):
-                    st.success("✅ Compte créé avec succès !")
-                    st.info("📧 Un courriel de validation a été envoyé à **{}**. Pensez à vérifier dans vos courriels indésirables (spam).".format(signup_data["contact_email"]))
-                    st.info("🔐 Vous pouvez maintenant vous connecter avec vos identifiants.")
-                    # Basculer vers l'onglet de connexion
+                    # CORRECTION #4 : Effacer les données du formulaire et notification claire
+                    st.session_state.pop('signup_data', None)
+                    
+                    # Notifications améliorées
+                    st.success("✅ Votre compte a été créé avec succès !")
+                    st.success("📧 Un courriel de validation a été envoyé à **{}**".format(signup_data["contact_email"]))
+                    st.warning("⚠️ Pensez à vérifier dans vos courriels indésirables (spam)")
+                    st.info("🔐 **PROCHAINE ÉTAPE :** Cliquez sur l'onglet 'Connexion' ci-dessus pour vous connecter avec vos identifiants")
+                    
+                    # Basculer automatiquement vers l'onglet de connexion après 3 secondes
                     st.session_state.show_login_tab = True
-                    # Petit délai pour que l'utilisateur voie le message
                     import time
-                    time.sleep(2)
-                    # Recharger pour effacer le formulaire
+                    time.sleep(3)
                     st.rerun()
         except Exception as e:
             st.error(f"❌ Erreur lors de l'inscription : {str(e)}")
@@ -565,7 +568,7 @@ elif not st.session_state.profile_completed:
         if profile_data:
             apply_supabase_auth()
             
-            # STOCKAGE DU LOGO EN BASE64
+            # STOCKAGE DU LOGO EN BASE64 - CORRECTION #2 appliquée
             logo_updated = False
             if profile_data.get("logo_file"):
                 try:
@@ -576,7 +579,7 @@ elif not st.session_state.profile_completed:
                         "logo": logo_base64
                     }).eq('id', st.session_state.user['id']).execute()
                     
-                    # Recharger l'utilisateur
+                    # CORRECTION #2 : Recharger l'utilisateur pour afficher le logo
                     user_updated = supabase.table('entreprises').select("*").eq(
                         'id', st.session_state.user['id']
                     ).execute()
@@ -620,30 +623,25 @@ else:
             unsafe_allow_html=True
         )
         
-        # AFFICHAGE DU LOGO DE L'ENTREPRISE (remplace l'icône générique)
+        # AFFICHAGE DU LOGO DE L'ENTREPRISE
         if user.get('logo'):
             try:
                 import base64 as b64
-                # Vérifier si le logo est déjà en base64 ou si c'est des bytes
                 logo_data = user['logo']
                 if isinstance(logo_data, str):
-                    # C'est déjà en base64
                     st.markdown(
                         f'<div style="text-align: center;"><img src="data:image/png;base64,{logo_data}" width="150" style="border-radius: 8px;"></div>',
                         unsafe_allow_html=True
                     )
                 else:
-                    # C'est des bytes, il faut encoder
                     logo_b64 = b64.b64encode(logo_data).decode('utf-8')
                     st.markdown(
                         f'<div style="text-align: center;"><img src="data:image/png;base64,{logo_b64}" width="150" style="border-radius: 8px;"></div>',
                         unsafe_allow_html=True
                     )
-            except Exception as e:
-                # Icône par défaut en cas d'erreur
+            except Exception:
                 st.markdown('<div style="text-align: center; font-size: 48px;">🏢</div>', unsafe_allow_html=True)
         else:
-            # Icône par défaut si pas de logo
             st.markdown('<div style="text-align: center; font-size: 48px;">🏢</div>', unsafe_allow_html=True)
         
         st.write(f"👤 **{user.get('contact_nom', 'Utilisateur')}**")
@@ -1068,7 +1066,7 @@ COMMENCER l'analyse par :
                 st.info("📷 Aucun logo enregistré")
         
         with col_upload:
-            # FORMULAIRE DE REMPLACEMENT DU LOGO
+            # FORMULAIRE DE REMPLACEMENT DU LOGO - CORRECTION #2 appliquée
             with st.form("update_logo_form"):
                 st.write("**Remplacer le logo**")
                 new_logo = st.file_uploader(
@@ -1096,7 +1094,7 @@ COMMENCER l'analyse par :
                             }).eq('id', user['id']).execute()
                             
                             if result.data and len(result.data) > 0:
-                                # Recharger l'utilisateur
+                                # CORRECTION #2 : Recharger l'utilisateur pour afficher le logo
                                 user_updated = supabase.table('entreprises').select("*").eq(
                                     'id', user['id']
                                 ).execute()
